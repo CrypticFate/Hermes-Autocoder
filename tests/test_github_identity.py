@@ -93,8 +93,8 @@ def test_app_auth_refresh_and_identity(settings, tmp_path):
     assert len(exchanges) == 2
 
 
-@pytest.mark.parametrize("login,exit_code", [("owner-bot", 0), ("owner", 1)])
-def test_doctor_verifies_bot_without_model_call(settings, tmp_path, monkeypatch, login, exit_code):
+@pytest.mark.parametrize("login,ok", [("owner-bot", True), ("owner", False)])
+def test_doctor_verifies_bot_without_model_call(settings, tmp_path, monkeypatch, login, ok):
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump(settings.model_dump(mode="json")))
     client = api(settings, lambda _: httpx.Response(200, json={"login": login}))
@@ -103,8 +103,10 @@ def test_doctor_verifies_bot_without_model_call(settings, tmp_path, monkeypatch,
     runner = CliRunner()
     assert runner.invoke(app, ["--config", str(path), "init"]).exit_code == 0
     result = runner.invoke(app, ["--config", str(path), "doctor"])
-    assert result.exit_code == exit_code, result.output
-    assert ("identity verified" if exit_code == 0 else "does not match") in result.output
+    assert result.exit_code == 1  # No live model proxy, MCP server or secrets in unit tests.
+    expected = "[ok] github bot identity: login owner-bot" if ok else "[FAIL] github bot identity"
+    assert expected in result.output, result.output
+    assert ok or "does not match" in result.output
     assert "unit-test-pat" not in result.output
 
 

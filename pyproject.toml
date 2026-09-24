@@ -34,7 +34,8 @@ packages = ["src/autocoder"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["integration: requires a disposable PostgreSQL database or Docker"]
+markers = ["integration: requires a disposable PostgreSQL database or Docker",
+           "docker: requires a Docker daemon (RUN_DOCKER_TESTS=1)"]
 
 [tool.ruff]
 line-length = 110

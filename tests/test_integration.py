@@ -15,7 +15,7 @@ from autocoder.db import initialize, locked, session_factory
 from autocoder.models import Attempt, Charge, Repository, Task
 from autocoder.worker import DockerRunner
 
-pytestmark = [pytest.mark.integration,
+pytestmark = [pytest.mark.integration, pytest.mark.docker,
               pytest.mark.skipif(os.environ.get("RUN_DOCKER_TESTS") != "1", reason="Set RUN_DOCKER_TESTS=1")]
 
 

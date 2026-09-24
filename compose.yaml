@@ -34,6 +34,7 @@ services:
       CONTAINERS: 1
       NETWORKS: 1
       IMAGES: 1
+      DISTRIBUTION: 1
       EXEC: 1
       POST: 1
       ALLOW_START: 1

@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Host-side wrapper: `scripts/hc <command>` runs the CLI inside the controller container, except for
+# commands that need the concierge (chat, memory) and the host-only half of `doctor`.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+compose() { docker compose "$@"; }
+case "${1:-}" in
+  chat)
+    exec docker compose exec -it concierge hermes ;;
+  memory)
+    shift
+    exec docker compose exec -T concierge python /opt/concierge/mem0_admin.py "$@" ;;
+  doctor)
+    status=0
+    compose exec -T controller autocoder --config /app/config.yaml doctor || status=1
+    if selfcheck=$(compose exec -T concierge sh -c 'cat "$HERMES_HOME/selfcheck.json"' 2>/dev/null) \
+        && echo "$selfcheck" | grep -q '"ok": true'; then
+      echo "[ok] concierge tool self-check: $selfcheck"
+    else
+      echo "[FAIL] concierge tool self-check: ${selfcheck:-not available (is the concierge running?)}"; status=1
+    fi
+    if [ "$(compose exec -T database psql -U postgres -d mem0 -tAc \
+          "select count(*) from pg_extension where extname='vector'" 2>/dev/null | tr -d '[:space:]')" = "1" ]; then
+      echo "[ok] mem0 database: reachable with the vector extension"
+    else
+      echo "[FAIL] mem0 database: missing or without the vector extension"; status=1
+    fi
+    if [ "$(docker compose config --format json | python3 -c 'import json,sys
+d=json.load(sys.stdin)["services"]
+print(",".join(sorted(n for n,s in d.items() for v in s.get("volumes",[]) if "docker.sock" in str(v.get("source","")))))')" = "docker-proxy" ]; then
+      echo "[ok] docker socket: mounted only by docker-proxy"
+    else
+      echo "[FAIL] docker socket: mounted by a service other than docker-proxy"; status=1
+    fi
+    exit $status ;;
+  *)
+    exec docker compose exec -T controller autocoder --config /app/config.yaml "$@" ;;
+esac

@@ -13,7 +13,7 @@ def test_initialization_is_paused_and_budget_is_explicit(tmp_path, settings):
     result = run("init")
     assert result.exit_code == 0, result.output
     result = run("status")
-    assert '"paused": true' in result.output
+    assert '"builder_pool_paused": true' in result.output
     assert '"daily_usd": 10.0' in result.output
     assert run("budget", "set", "nan", "100").exit_code != 0
     assert run("budget", "set", "10", "100").exit_code == 0

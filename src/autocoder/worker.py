@@ -168,19 +168,14 @@ class DockerRunner:
         # Controller writes input; the running worker sees the bind-mounted directory.
         (self.run_dir / "input" / "context.json").write_text(context.model_dump_json())
         result_path = self.run_dir / "output" / "result.json"
-        if result_path.exists() or result_path.is_symlink():
-            result_path.unlink()
+        for stale in (result_path, self.run_dir / "output" / "hermes_effective_config.json"):
+            if stale.exists() or stale.is_symlink():
+                stale.unlink()
         execution = self.command(["/opt/hermes/.venv/bin/python", "-m", "autocoder.hermes_runner"],
                                  timeout=context.timeout_seconds,
                                  environment={"AUTOCODER_MODEL_TOKEN": self.token})
         (self.run_dir / f"{context.mode}.log").write_text(execution["output"])
-        if execution["exit_code"] != 0:
-            raise RuntimeError(f"Hermes exited with code {execution['exit_code']}; see redacted worker log")
-        if result_path.is_symlink() or not result_path.is_file() or result_path.stat().st_size > 200_000:
-            raise ValueError("Missing or invalid Hermes result")
-        result = RunResult.model_validate_json(redact(result_path.read_text(), [self.token]))
-        if context.mode == "implement":
-            result.validate_criteria(context.criteria)
+        # I7 and tool policy are checked before any builder output is trusted.
         effective = self.run_dir / "output" / "hermes_effective_config.json"
         if effective.is_symlink() or not effective.is_file() or effective.stat().st_size > 100_000:
             raise ValueError("Missing Hermes effective configuration")
@@ -189,6 +184,13 @@ class DockerRunner:
             raise ValueError("Builder memory must be disabled")
         if config.get("forbidden_tools") != []:
             raise ValueError("Forbidden builder toolset")
+        if execution["exit_code"] != 0:
+            raise RuntimeError(f"Hermes exited with code {execution['exit_code']}; see redacted worker log")
+        if result_path.is_symlink() or not result_path.is_file() or result_path.stat().st_size > 200_000:
+            raise ValueError("Missing or invalid Hermes result")
+        result = RunResult.model_validate_json(redact(result_path.read_text(), [self.token]))
+        if context.mode == "implement":
+            result.validate_criteria(context.criteria)
         return result
 
     def stop(self):

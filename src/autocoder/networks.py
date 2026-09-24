@@ -30,11 +30,15 @@ def remove_network(network):
         pass
 
 
+def isolation_script():
+    """Exit non-zero if any public endpoint (DNS or direct IP) is reachable."""
+    return ("import socket,sys; results=[]\n"
+            "for host in ['github.com','openrouter.ai','1.1.1.1']:\n"
+            " try:\n  s=socket.create_connection((host,443),timeout=2);s.close();results.append(host)\n"
+            " except OSError: pass\n"
+            "sys.exit(1 if results else 0)")
+
+
 def isolation_probe(runner):
-    script = ("import socket,sys; results=[]\n"
-              "for host in ['github.com','openrouter.ai','1.1.1.1']:\n"
-              " try:\n  s=socket.create_connection((host,443),timeout=2);s.close();results.append(host)\n"
-              " except OSError: pass\n"
-              "sys.exit(1 if results else 0)")
-    if runner.command(["python3", "-c", script], timeout=12)["exit_code"]:
+    if runner.command(["python3", "-c", isolation_script()], timeout=12)["exit_code"]:
         raise RuntimeError("Builder egress isolation probe failed")

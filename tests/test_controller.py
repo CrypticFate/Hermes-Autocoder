@@ -138,3 +138,31 @@ def test_sweep_removes_only_labeled_orphans(settings, factory, active):
     controller._sweep_docker()
     orphan.remove.assert_called_once()
     running.remove.assert_not_called()
+
+
+@pytest.mark.parametrize("state", ["preparing", "running", "validating"])
+def test_chaos_restart_mid_attempt_leaves_no_orphans(settings, factory, state):
+    """Phase 15 chaos: the controller died mid-attempt; restart cleans up and requeues."""
+    with factory.begin() as session:
+        session.add(Task(id="t", repo_id=1, title="x", objective="x", fingerprint="t", state=state,
+                         attempt_count=1, plan_seq=1, plan_path="plans/01-x.md", plan_slug="x"))
+        session.flush()
+        session.add(Attempt(id="a", task_id="t", container_id="builder"))
+        session.add(Sidecar(attempt_id="a", service_name="postgres", image="x", status="healthy",
+                            container_id="sidecar"))
+    issue_capability(factory, "a", 600)
+    docker = FakeDocker()
+    leftovers = [Mock(labels={"autocoder.managed": "true", "autocoder.attempt": "a"}) for _ in range(2)]
+    docker.containers.list.side_effect = lambda **kw: [c for c in leftovers if not c.remove.called]
+    network = Mock(labels={"autocoder.managed": "true", "autocoder.attempt": "a"})
+    docker.networks.list.side_effect = lambda **kw: [] if network.remove.called else [network]
+    controller = Controller(settings, factory, docker_client=docker)
+    controller.acquire()
+    controller.reconcile()
+    assert all(c.remove.called for c in leftovers) and network.remove.called
+    with factory() as session:
+        assert session.get(Task, "t").state == "queued"
+        assert session.get(Attempt, "a").outcome == "interrupted"
+        assert session.get(Attempt, "a").container_id is None
+        assert session.scalar(select(Sidecar)).status == "removed"
+        assert all(c.revoked for c in session.scalars(select(Capability)))
