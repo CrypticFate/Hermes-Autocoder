@@ -1,0 +1,70 @@
+name: hermes-autocoder
+services:
+  database:
+    image: postgres:16-alpine@sha256:4327b9fd295502f326f44153a1045a7170ddbfffed1c3829798328556cfd09e2
+    restart: unless-stopped
+    mem_limit: 1g
+    environment:
+      POSTGRES_USER: autocoder
+      POSTGRES_DB: autocoder
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes: [database:/var/lib/postgresql/data]
+    networks: [control]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U autocoder -d autocoder]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  controller:
+    build: .
+    image: hermes-autocoder-controller:local
+    restart: unless-stopped
+    init: true
+    mem_limit: 1g
+    environment:
+      PGPASSFILE: /run/secrets/pgpass
+    secrets: [github_bot, pgpass]
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${AUTOCODER_DATA_DIR:-/var/lib/hermes-autocoder}:${AUTOCODER_DATA_DIR:-/var/lib/hermes-autocoder}
+    networks: [control]
+    depends_on:
+      database: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, autocoder, --config, /app/config.yaml, health]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
+  model-proxy:
+    image: hermes-autocoder-controller:local
+    restart: unless-stopped
+    init: true
+    mem_limit: 512m
+    command: [proxy]
+    environment:
+      PGPASSFILE: /run/secrets/pgpass
+    secrets: [model_provider, pgpass]
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    networks: [control, workers]
+    depends_on:
+      database: {condition: service_healthy}
+    logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
+networks:
+  control: {}
+  workers:
+    name: hermes-workers
+volumes:
+  database: {}
+secrets:
+  model_provider:
+    file: ./secrets/model_provider
+  github_bot:
+    file: ./secrets/github_bot
+  pgpass:
+    file: ./secrets/pgpass
+  postgres_password:
+    file: ./secrets/postgres_password

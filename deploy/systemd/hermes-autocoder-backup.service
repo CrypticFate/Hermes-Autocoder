@@ -1,0 +1,14 @@
+[Unit]
+Description=Back up Hermes Autocoder database and workspaces
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/hermes-autocoder
+Environment=AUTOCODER_DATA_DIR=/var/lib/hermes-autocoder
+ExecStart=/opt/hermes-autocoder/scripts/backup.sh /var/backups/hermes-autocoder
+ExecStartPost=/usr/bin/docker compose run --rm controller prune
+TimeoutStartSec=1800
+UMask=0077

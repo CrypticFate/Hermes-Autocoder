@@ -1,0 +1,127 @@
+owners: [CrypticFate]
+operator_login: CrypticFate
+
+github:
+  mode: bot_pat                 # bot_pat | app
+  bot_login: crypticfate-autocoder
+  token_secret: /run/secrets/github_bot
+  commit_name: Hermes Autocoder
+  commit_email: "<bot-id>+crypticfate-autocoder@users.noreply.github.com"
+  delete_merged_branches: true
+  ruleset_recheck_seconds: 600
+  require_ruleset:
+    min_approvals: 1
+    require_last_push_approval: true
+    block_force_push: true
+    block_deletion: true
+
+repositories:
+  auto_enroll: false            # repos are added via chat or `hc repos add`
+
+scheduler:
+  tick_seconds: 15
+  pr_poll_seconds: 60
+  feedback_debounce_seconds: 180
+  sequential: true              # v2 requires true
+  max_attempts_per_task: 3
+  max_repairs_per_task: 5
+
+model:
+  provider_url: https://openrouter.ai/api/v1
+  model: nvidia/nemotron-3-super-120b-a12b:free
+  input_usd_per_mtok: 0
+  output_usd_per_mtok: 0
+  max_output_tokens: 8192
+
+budgets:
+  daily_usd: 5.0
+  monthly_usd: 20.0
+  pools:
+    builder:
+      requests_per_day: 500
+      requests_per_attempt: 60
+    concierge:
+      requests_per_day: 300
+
+builder:
+  image: "<worker image digest>"
+  runtime: runc                 # runc | runsc (gVisor)
+  cpus: 2
+  memory: 3g
+  pids: 512
+  deadline_seconds: 1800
+  hermes_max_iterations: 40
+  setup_egress: true
+
+services_allowlist:
+  postgres:
+    image: "postgres:16@sha256:<digest>"
+    cpus: 1
+    memory: 1g
+    tmpfs: /var/lib/postgresql/data
+    env:
+      POSTGRES_USER: app
+      POSTGRES_DB: app
+      POSTGRES_PASSWORD: "{{password}}"
+    healthcheck: ["pg_isready", "-U", "app", "-d", "app"]
+    expose_env:
+      DATABASE_URL: "postgresql://app:{{password}}@{{host}}:5432/app"
+      PGHOST: "{{host}}"
+      PGUSER: app
+      PGPASSWORD: "{{password}}"
+      PGDATABASE: app
+  mysql:
+    image: "mysql:8.4@sha256:<digest>"
+    tmpfs: /var/lib/mysql
+    env:
+      MYSQL_DATABASE: app
+      MYSQL_USER: app
+      MYSQL_PASSWORD: "{{password}}"
+      MYSQL_ROOT_PASSWORD: "{{password}}"
+    healthcheck: ["mysqladmin", "ping", "-h", "127.0.0.1", "-uapp", "-p{{password}}"]
+    expose_env:
+      DATABASE_URL: "mysql://app:{{password}}@{{host}}:3306/app"
+  redis:
+    image: "redis:7@sha256:<digest>"
+    command: ["redis-server", "--requirepass", "{{password}}", "--save", ""]
+    healthcheck: ["redis-cli", "-a", "{{password}}", "ping"]
+    expose_env:
+      REDIS_URL: "redis://:{{password}}@{{host}}:6379/0"
+  mongo:
+    image: "mongo:7@sha256:<digest>"
+    tmpfs: /data/db
+    env:
+      MONGO_INITDB_ROOT_USERNAME: app
+      MONGO_INITDB_ROOT_PASSWORD: "{{password}}"
+    healthcheck: ["mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+    expose_env:
+      MONGODB_URI: "mongodb://app:{{password}}@{{host}}:27017/?authSource=admin"
+
+profiles:
+  default:
+    setup: []
+    checks:
+      - "test -f README.md"
+    command_seconds: 600
+  python:
+    setup: ["pip install -e '.[dev]' || pip install -r requirements.txt"]
+    checks: ["ruff check .", "pytest -q"]
+    command_seconds: 900
+  node:
+    setup: ["npm ci"]
+    checks: ["npm test --silent", "npm run lint --if-present"]
+    command_seconds: 900
+
+repository_profiles:
+  CrypticFate/demohermes: default
+
+mcp:
+  listen: "0.0.0.0:8765"        # reachable only on the internal `control` network
+  token_secret: /run/secrets/mcp_concierge_token
+  rate_limit_per_minute: 60
+
+concierge:
+  model_token_secret: /run/secrets/concierge_model_token
+  memory_user_id: operator
+
+data_dir: /data

@@ -1,0 +1,46 @@
+# Python environments, bytecode, and build outputs
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Test, lint, and coverage artifacts
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Local configuration and credentials (keep example templates)
+.env
+.env.*
+!.env.example
+!.env.*.example
+config.yaml
+key.text
+*.key
+*.pem
+secrets/
+
+# Runtime state, databases, logs, and backups
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.log
+data/
+backups/
+
+# Local editor and operating-system files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
