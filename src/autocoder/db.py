@@ -1,6 +1,6 @@
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import create_engine, event, make_url, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from autocoder.config import Settings
@@ -9,7 +9,11 @@ from autocoder.models import Base, Control
 
 def session_factory(settings: Settings):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    engine = create_engine(settings.database_url, pool_pre_ping=True)
+    url = make_url(settings.database_url)
+    if settings.database_password_file:
+        from autocoder.config import secret
+        url = url.set(password=secret(settings.database_password_file))
+    engine = create_engine(url, pool_pre_ping=True)
     if engine.dialect.name == "sqlite":
         @event.listens_for(engine, "connect")
         def configure_sqlite(connection, _):

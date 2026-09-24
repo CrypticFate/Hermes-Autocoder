@@ -55,7 +55,7 @@ builder:
 
 services_allowlist:
   postgres:
-    image: "postgres:16@sha256:<digest>"
+    image: "postgres:16@sha256:a3b7f434b2dc57ce85a67e171163eb8ab1a1ebcb39d27484661f26b1dfbe30d6"
     cpus: 1
     memory: 1g
     tmpfs: /var/lib/postgresql/data
@@ -71,7 +71,7 @@ services_allowlist:
       PGPASSWORD: "{{password}}"
       PGDATABASE: app
   mysql:
-    image: "mysql:8.4@sha256:<digest>"
+    image: "mysql:8.4@sha256:0744ee5ef89ce6ccfa13de3e579fe6b9e27f93dd70da9c06d2c908b1b193fb8d"
     tmpfs: /var/lib/mysql
     env:
       MYSQL_DATABASE: app
@@ -82,13 +82,13 @@ services_allowlist:
     expose_env:
       DATABASE_URL: "mysql://app:{{password}}@{{host}}:3306/app"
   redis:
-    image: "redis:7@sha256:<digest>"
+    image: "redis:7@sha256:c6eabf748fc7a61dbb5a705c78bcf3d6377b1127a97d0ce965c11c44ba46896f"
     command: ["redis-server", "--requirepass", "{{password}}", "--save", ""]
     healthcheck: ["redis-cli", "-a", "{{password}}", "ping"]
     expose_env:
       REDIS_URL: "redis://:{{password}}@{{host}}:6379/0"
   mongo:
-    image: "mongo:7@sha256:<digest>"
+    image: "mongo:7@sha256:9854f7139445d766a9523571d6f047530c45547460ffcf8259eb2bf4264632ca"
     tmpfs: /data/db
     env:
       MONGO_INITDB_ROOT_USERNAME: app
@@ -124,4 +124,8 @@ concierge:
   model_token_secret: /run/secrets/concierge_model_token
   memory_user_id: operator
 
-data_dir: /data
+data_dir: /var/lib/hermes-autocoder   # same absolute path as AUTOCODER_DATA_DIR in Compose
+
+# Deployment settings (not in Appendix A): database role password comes from a Docker secret.
+database_url: postgresql+psycopg://autocoder@database/autocoder
+database_password_file: /run/secrets/db_autocoder_password

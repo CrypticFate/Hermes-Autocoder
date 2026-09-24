@@ -1,0 +1,31 @@
+# Hermes configuration for the Hermes Autocoder concierge profile.
+# Rendered by entrypoint.sh at every start from Docker secrets; edits to the rendered file are lost.
+# Invariant I6: no terminal, file, code execution, browser, web, image or delegation tools.
+model:
+  default: ${MODEL}
+  provider: custom
+  base_url: ${PROXY_URL}
+  api_key: ${CONCIERGE_MODEL_TOKEN}
+toolsets: ${TOOLSETS}
+platform_toolsets:
+  cli: ${TOOLSETS}
+  telegram: ${TOOLSETS}
+mcp_servers:
+  autocoder:
+    url: ${MCP_URL}
+    headers:
+      Authorization: ${MCP_AUTHORIZATION}
+    timeout: 120
+    connect_timeout: 30
+memory:
+  memory_enabled: ${BUILTIN_MEMORY}
+  user_profile_enabled: ${BUILTIN_MEMORY}
+  provider: mem0
+compression:
+  enabled: false
+approvals:
+  mode: manual
+auxiliary: ${AUXILIARY}
+# The Kanban dispatcher spawns tool-enabled workers; the concierge must never run it.
+kanban:
+  dispatch_in_gateway: false
