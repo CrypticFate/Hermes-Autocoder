@@ -42,7 +42,11 @@ def inspect_repository(settings, client, repo):
         if metadata.get("archived"):
             problems.append("Repository is archived; unarchive it first")
         permission = client.permission(repo, settings.github.bot_login).get("permission", "unknown")
-        if permission != "write":
+        if settings.github.mode == "operator_pat":
+            # The operator's own token: owners are admins. A pull-request ruleset is still required.
+            if permission not in {"write", "maintain", "admin"}:
+                problems.append("The token's account needs at least Write access to this repository")
+        elif permission != "write":
             problems.append("Give the bot exactly Write access, not read, maintain or admin")
         branch = metadata.get("default_branch", "main")
         client.branch(repo, branch)

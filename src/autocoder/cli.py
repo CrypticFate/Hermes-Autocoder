@@ -199,13 +199,16 @@ def doctor(ctx: typer.Context):
 
     def secrets_present():
         from autocoder.config import secret
-        for path in filter(None, [settings.github.token_secret if settings.github.mode == "bot_pat" else
-                                  settings.github.private_key_secret, settings.mcp.token_secret,
+        for path in filter(None, [settings.github.private_key_secret if settings.github.mode == "app" else
+                                  settings.github.token_secret, settings.mcp.token_secret,
                                   settings.database_password_file]):
             secret(Path(path), multiline=settings.github.mode == "app")
         return "present"
     check("secrets", secrets_present)
     check("github bot identity", lambda: "login " + for_owner(settings, settings.owners[0]).verify_identity())
+    if settings.github.mode == "operator_pat":
+        results.append(("github mode", True, "operator_pat: PRs are opened with your own token. GitHub will not "
+                        "let you approve them; merge protection relies on the ruleset and this code."))
 
     def budgets():
         with factory() as session:

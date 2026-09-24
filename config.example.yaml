@@ -2,7 +2,7 @@ owners: [CrypticFate]
 operator_login: CrypticFate
 
 github:
-  mode: bot_pat                 # bot_pat | app
+  mode: bot_pat                 # bot_pat | app | operator_pat (your own token; see docs/DEPLOYMENT.md)
   bot_login: crypticfate-autocoder
   token_secret: /run/secrets/github_bot
   commit_name: Hermes Autocoder

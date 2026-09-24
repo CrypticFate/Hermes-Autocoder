@@ -26,6 +26,43 @@ Local first, then a VPS. Day-to-day use is in [OPERATOR_GUIDE.md](OPERATOR_GUIDE
 Optional App mode (`github.mode: app`) uses installation tokens instead of a PAT; add `app_id`,
 `installation_id` and `private_key_secret`, and mount the key into the controller only (local override).
 
+### Using your own token instead of a bot (`github.mode: operator_pat`)
+
+Opt-in and weaker than a bot account; choose it knowingly.
+
+What changes:
+- PRs are opened by **you**. GitHub never lets you approve your own PR, so the ruleset must require
+  **0 approvals** (keep "Require a pull request before merging", "Block force pushes" and "Restrict
+  deletions"). You merge your agent PRs yourself, as the author.
+- The token's owner is usually **admin** on its repositories, so onboarding accepts write, maintain or admin.
+  It still refuses a repository without a pull-request ruleset on the default branch.
+- "Never merge" is then enforced by this code (there is no merge call anywhere, and pushes are asserted to
+  `agent/*` only), not by GitHub. A leaked token can do whatever the token's scopes allow, so scope it
+  tightly.
+- Your PR comments steer repairs as usual. The gatekeeper's own comments carry a hidden marker so they are
+  never mistaken for yours. GitHub does not let you "Request changes" on your own PR: use review comments
+  or a "Comment" review.
+
+Token: **fine-grained**, resource owner = your account, **only the repositories Hermes manages**,
+permissions Contents read/write, Pull requests read/write, Metadata read, Checks / Commit statuses / Actions
+read-only. Do not use a classic all-access token. Save it exactly where the bot token would go:
+`secrets/github_bot` (mounted into the controller only; builders and the concierge never see it).
+
+`config.yaml`:
+```yaml
+operator_login: CrypticFate
+github:
+  mode: operator_pat
+  bot_login: CrypticFate                 # must equal operator_login in this mode
+  commit_name: Hermes Autocoder          # commits are authored under this name with your token
+  commit_email: "<your-id>+CrypticFate@users.noreply.github.com"
+  require_ruleset:
+    min_approvals: 0
+    require_last_push_approval: false
+    block_force_push: true
+    block_deletion: true
+```
+
 ## 2. Configuration
 
 ```sh
