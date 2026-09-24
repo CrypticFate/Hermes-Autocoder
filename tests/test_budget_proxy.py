@@ -171,3 +171,70 @@ def test_rate_limit_wait_respects_cancellation(settings, factory, active, cancel
     with factory() as session:
         assert len(session.scalars(select(Charge)).all()) == 1
         assert session.scalar(select(Charge)).micro_usd == (0 if cancel else 11)
+
+
+def concierge_settings(settings, builder_per_day=500, concierge_per_day=300):
+    from autocoder.config import Settings
+    return Settings.model_validate({**settings.model_dump(), "budgets": {
+        **settings.budgets.model_dump(), "pools": {"builder": {"requests_per_day": builder_per_day},
+                                                   "concierge": {"requests_per_day": concierge_per_day}}}})
+
+
+def test_concierge_token_works_while_builder_pool_paused(settings, factory, active):
+    from autocoder.budget import register_concierge_token
+    concierge = "c" * 43
+    register_concierge_token(factory, concierge)
+    attempt = issue_capability(factory, active, 60)
+    with locked(factory) as (_, control):
+        control.paused = True
+    with pytest.raises(BudgetError, match="paused"):
+        reserve(factory, settings, attempt, body())
+    charge = reserve(factory, settings, concierge, body())
+    with factory() as session:
+        assert session.get(Charge, charge).pool == "concierge"
+        assert session.get(Charge, charge).attempt_id is None
+
+
+def test_pool_limits_are_independent(settings, factory, active):
+    from autocoder.budget import register_concierge_token
+    settings = concierge_settings(settings, builder_per_day=1, concierge_per_day=2)
+    concierge = "d" * 43
+    register_concierge_token(factory, concierge)
+    attempt = issue_capability(factory, active, 60)
+    reserve(factory, settings, attempt, body())
+    with pytest.raises(BudgetError, match="Builder pool"):
+        reserve(factory, settings, attempt, body())
+    reserve(factory, settings, concierge, body())
+    reserve(factory, settings, concierge, body())
+    with pytest.raises(BudgetError, match="Concierge pool"):
+        reserve(factory, settings, concierge, body())
+
+
+def test_rotation_revokes_previous_concierge_token(settings, factory):
+    from autocoder.budget import register_concierge_token
+    old, new = "e" * 43, "f" * 43
+    register_concierge_token(factory, old)
+    register_concierge_token(factory, new)
+    with pytest.raises(BudgetError, match="Invalid"):
+        reserve(factory, settings, old, body())
+    reserve(factory, settings, new, body())
+
+
+@pytest.mark.parametrize("extra,status", [
+    ({"response_format": {"type": "json_object"}}, 200),
+    ({"response_format": {"type": "json_schema", "json_schema": {"name": "facts", "schema": {}}}}, 200),
+    ({"messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]}, 200),
+    ({"tools": [{"type": "function", "function": {"name": "get_status", "parameters": {}}}],
+      "tool_choice": "auto"}, 200),
+    ({"response_format": {"type": "bogus"}}, 400),
+    ({"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "x"}}]}]}, 400),
+])
+def test_concierge_and_mem0_request_shapes(settings, factory, extra, status):
+    from autocoder.budget import register_concierge_token
+    token = "g" * 43
+    register_concierge_token(factory, token)
+    client = TestClient(create_app(settings, factory, httpx.MockTransport(lambda _: httpx.Response(
+        200, json={"choices": [], "usage": {"prompt_tokens": 1, "completion_tokens": 1}}))))
+    response = client.post("/v1/chat/completions", json={**body(), **extra},
+                           headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == status
