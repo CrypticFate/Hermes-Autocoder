@@ -1,17 +1,15 @@
 import asyncio
-import hashlib
 import json
 import math
-import time
 from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
-from autocoder.budget import BudgetError, reserve, settle
+from autocoder.budget import BudgetError, capability_active, digest, reserve, settle
 from autocoder.config import secret
-from autocoder.models import Attempt, Capability, Control, Event, Task
+from autocoder.models import Attempt, Capability, Control, Event
 from autocoder.redaction import install_log_redaction
 from autocoder.streaming import completion_sse
 
@@ -43,10 +41,10 @@ def create_app(settings, factory, transport=None, sleep=asyncio.sleep):
             raise HTTPException(400, "Invalid JSON") from None
         if not isinstance(body, dict) or not isinstance(body.get("messages"), list):
             raise HTTPException(400, "messages required")
-        # v1 supports text/tool Chat Completions, not media, remote files or provider overrides.
+        # Text/tool Chat Completions (Hermes) and JSON mode (mem0); no media, files or provider overrides.
         allowed = {"model", "messages", "tools", "tool_choice", "temperature", "top_p",
                    "max_tokens", "max_completion_tokens", "stream", "stream_options",
-                   "parallel_tool_calls", "reasoning_effort"}
+                   "parallel_tool_calls", "reasoning_effort", "response_format", "stop"}
         if set(body) - allowed or not isinstance(body.get("stream", False), bool):
             raise HTTPException(400, "Unsupported request option")
         streaming = body.get("stream", False)
@@ -54,8 +52,15 @@ def create_app(settings, factory, transport=None, sleep=asyncio.sleep):
         body.pop("stream_options", None)
         if body.get("reasoning_effort") not in (None, "none", "minimal", "low", "medium", "high", "xhigh"):
             raise HTTPException(400, "Unsupported reasoning effort")
+        response_format = body.get("response_format")
+        if response_format is not None and (not isinstance(response_format, dict) or response_format.get(
+                "type") not in {"text", "json_object", "json_schema"}):
+            raise HTTPException(400, "Unsupported response_format")
         for message in body["messages"]:
             content = message.get("content") if isinstance(message, dict) else False
+            if isinstance(content, list) and all(isinstance(part, dict) and part.get("type") == "text"
+                                                 and isinstance(part.get("text"), str) for part in content):
+                continue
             if content is not None and not isinstance(content, str):
                 raise HTTPException(400, "Only text content is supported")
         if "max_tokens" not in body and "max_completion_tokens" not in body:
@@ -66,10 +71,11 @@ def create_app(settings, factory, transport=None, sleep=asyncio.sleep):
         except BudgetError as exc:
             if "ceiling" in str(exc):
                 with factory.begin() as session:
-                    cap = session.get(Capability, hashlib.sha256(token.encode()).hexdigest())
+                    cap = session.get(Capability, digest(token))
                     if cap:
-                        attempt = session.get(Attempt, cap.attempt_id)
-                        session.add(Event(task_id=attempt.task_id, kind="budget_exhausted", detail=str(exc)))
+                        attempt = session.get(Attempt, cap.attempt_id) if cap.attempt_id else None
+                        session.add(Event(task_id=attempt.task_id if attempt else None, kind="budget_exhausted",
+                                          detail=f"{cap.pool}: {exc}"))
             raise HTTPException(403, str(exc)) from None
         try:
             async with httpx.AsyncClient(timeout=120, transport=transport) as client:
@@ -86,12 +92,8 @@ def create_app(settings, factory, transport=None, sleep=asyncio.sleep):
                         for _ in range(max(1, math.ceil(delay))):
                             await sleep(1)
                             with factory() as session:
-                                cap = session.get(Capability, hashlib.sha256(token.encode()).hexdigest())
-                                attempt = session.get(Attempt, cap.attempt_id) if cap else None
-                                task = session.get(Task, attempt.task_id) if attempt else None
-                                inactive = (not cap or cap.revoked or cap.expires_at < time.time()
-                                            or session.get(Control, 1).paused or not task
-                                            or task.state not in {"planning", "running", "validating"})
+                                cap = session.get(Capability, digest(token))
+                                inactive = not capability_active(session, cap, session.get(Control, 1))
                             if inactive:
                                 settle(factory, settings, charge_id, {"prompt_tokens": 0, "completion_tokens": 0})
                                 raise HTTPException(403, "Run paused or inactive")

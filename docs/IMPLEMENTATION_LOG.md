@@ -68,3 +68,71 @@ The operator explicitly instructed: "Continue all phases; defer live checks" on 
 - Added implementation plans/report immutability gates, Git driver/submodule rejection, sensitive-change detection and escaped/redacted report rendering from measured checks and independent review.
 - Added fresh read-only checks-container runner without a model token, sharing only the attempt network/services and dependency environment. CI workflow changes now force draft review instead of being unconditionally prohibited, as requested.
 - Gate and report tests verify forged success claims cannot override failing checks. `uv run ruff check .` passed; `uv run pytest`: 144 passed, 2 skipped, 1 warning. Live checks-container behavior remains pending Docker acceptance.
+
+## 2026-09-24: Snapshot repair before Phase 9
+
+- The committed snapshot did not match the Phase 8 entry above: `uv run pytest` gave 136 passed, 8 failed, 2 skipped, and `ruff` reported 2 errors in controller.py. The failures were v1 tests (goal planner, `save_plan`, `awaiting_review`, `plan/<id>` artifacts) exercising interfaces the v2 controller no longer has.
+- Rewrote the controller for the v2 flow and replaced those tests with v2 tests that drive a real local git remote (tests/helpers.py). No invariant was weakened to make a test pass.
+
+## 2026-09-24: Phase 9 Publication
+
+- Branches `agent/NN-slug`, `-r<k>` after retry, `-rb<k>` after rebase, `agent/plans-<id>`. Commits `plan NN: <title>` then `report NN: <title>`; repairs add `plan NN: address review (repair k)` and `report NN: <title> (repair k)`. Never force-pushed.
+- Before every push: forced ruleset/permission verification (fails closed), HEAD equals the validated commit, clean tree, and `assert_agent_branch` (regex, refspec `HEAD:refs/heads/agent/*`) in code. PR title/body per Appendix D, draft state kept in sync (GraphQL draft/ready), `autocoder` label, merged branches deleted.
+- Tests: tests/test_workflow.py (real git: titles, bodies, commits, report content, pushes only to agent/*, no merge calls); T-I1/T-I2 invariants.
+
+## 2026-09-24: Phase 10 Feedback and Repair
+
+- feedback.py: per-source cursors, dedupe by `(task, source, github_id)`, operator-only eligibility, bot items skipped, others stored ignored with one info notification, CHANGES_REQUESTED/COMMENTED-with-body repair, APPROVED ignored, failed/timed-out check runs stored as redacted 4 KB excerpts, debounce on the latest operator activity, fenced rendering, consumption on publication.
+- Conflicts: clean rebase in a gatekeeper clone (hooks disabled) publishes `-rb<k>` as a new PR and closes the old one with a link. Deviation: on a real conflict the repair re-implements the plan on a new `-rb<k>` branch from the new `main` (with the conflict summary and previous summary as untrusted context), because builders cannot rebase (read-only `.git`) and the ruleset blocks force-push. The superseded PR is closed when the new PR opens.
+- Plan PRs (kind `plan_draft`) do not collect feedback; the operator edits or closes them. Closing a plan PR notifies but does not pause the repository.
+- Tests: non-operator injection never reaches context.json, debounce groups comments, CI excerpts fenced and capped, merge → next plan, close → pause + retry `-r1`, conflict and clean-rebase paths, repair limit.
+
+## 2026-09-24: Phase 11 Pools
+
+- Capabilities carry `kind`/`pool`; `register_concierge_token` stores only the hash and revokes the previous one. Per-pool daily request limits plus builder per-attempt limits, both under the global USD ceilings. Pause blocks only builder capabilities.
+- Proxy accepts `response_format` (text/json_object/json_schema) and text-part content lists; mem0 2.2's OpenAI LLM sends `temperature`, `top_p`, `max_tokens`, optional `response_format`/`tools`. mem0 adds OpenRouter-only fields only when `OPENROUTER_API_KEY` is set in its environment, which the concierge never has.
+- Tests: concierge works while paused, independent pool limits, rotation, one test per request shape.
+
+## 2026-09-24: Phase 12 MCP Server
+
+- Pinned `mcp` 2.2.0 (`mcp.server.mcpserver.MCPServer`; FastMCP was renamed in 2.x). Streamable HTTP at `/mcp`, stateless JSON responses. DNS-rebinding host checks are disabled because the listener is reachable only on the internal network and every request needs the bearer token (constant-time compare); 60 calls/minute; `/healthz` unauthenticated.
+- Exactly the 15 Appendix G tools; Pydantic-validated arguments; audit `events` rows (`mcp_call`); redacted output capped at 16 KB with untrusted text truncated first; repository/PR/CI/builder text wrapped as `untrusted_text`. `Operations` is shared with the CLI.
+- Runs as a thread inside `autocoder run` (also `autocoder mcp` standalone).
+
+## 2026-09-24: Phase 13 Concierge
+
+- Verified against hermes-agent 0.19.0 from PyPI (the pinned commit's source was not downloadable here: codeload returned 403): config keys `model.{default,provider,base_url,api_key}`, `platform_toolsets`, `mcp_servers.<name>.{url,headers}`, `memory.{memory_enabled,user_profile_enabled,provider}`, `approvals.mode` (the builder config used `approval`, now fixed to `approvals`), `auxiliary.<task>`, `kanban.dispatch_in_gateway`. The mem0 plugin reads `$HERMES_HOME/mem0.json` with `mode: oss` and passes `oss.{llm,embedder,vector_store}` to `Memory.from_config`.
+- Found with the real Hermes resolver: Hermes always resolves a `kanban` toolset. Its tools register only with `HERMES_KANBAN_TASK` set or `kanban` in the profile toolsets, but its gateway dispatcher can spawn tool-enabled workers. The template disables the dispatcher and the self-check accepts `kanban` only when gated off.
+- Self-check (fail closed): allowlisted toolsets only (memory, session_search, clarify, todo, mcp-*), no forbidden tool names, only the `autocoder` MCP server, `memory.provider: mem0`. Checked against the real 0.19 resolver: the rendered config passes; adding `terminal` fails.
+- mem0 2.2.0: `fastembed` embedder (`BAAI/bge-small-en-v1.5`, 384 dims, baked into the image, offline at runtime), `pgvector` store (psycopg3 pool), OpenAI-compatible LLM via the proxy with the concierge token, `user_id: operator`.
+- Deviation: secrets are rendered into the concierge home volume at each start (mode 0600) because Hermes and mem0 read them from config files. Documented in DEPLOYMENT.md.
+- Pending live: concierge image build, E2E-6.
+
+## 2026-09-24: Phase 14 Hardening
+
+- docker-socket-proxy v0.4.2 (digest-pinned) is the only socket holder (CONTAINERS, NETWORKS, IMAGES, DISTRIBUTION, EXEC, POST, start/stop; no volumes, swarm, services, secrets, build or system). Controller uses `DOCKER_HOST=tcp://docker-proxy:2375`.
+- Networks per section 4.2; pgvector/pgvector:pg16 by digest; Postgres init script creates `autocoder` and `mem0` with separate roles and `vector`; sidecar allowlist digests pinned in config.example.yaml. Health checks, `restart: unless-stopped`, memory limits, `no-new-privileges`. Deviation: the proxy uses the `autocoder` role (the plan allows this; a narrower role was not needed).
+- Labeled-object guards apply to remove/exec/network operations in worker.py, sidecars.py and networks.py.
+- `docker compose config` validates. Deploy acceptance is pending (no Docker daemon in the build environment).
+
+## 2026-09-24: Phase 15 Recovery, Logs, CLI
+
+- Reconcile revokes tokens, removes labeled containers/networks and sidecar rows of interrupted attempts, requeues or blocks, re-publishes `publication_pending`, and sweeps labeled objects of finished or unknown attempts. Chaos tests cover restarts during preparing/running/validating and publishing.
+- JSON logs (`AUTOCODER_LOG_FORMAT=json`) with repo/task_id/attempt_id/plan fields, redaction filter on every handler.
+- CLI per Phase 15.3; `scripts/hc` host wrapper for chat, memory and the host half of doctor (concierge self-check, mem0 `vector`, socket mounts).
+
+## 2026-09-24: Phase 16 Tests
+
+- tests/invariants/test_invariants.py covers T-I1..T-I14 (plus test_redaction.py). They run in CI with the rest of the suite.
+- Docker-gated tests (`-m docker`, `RUN_DOCKER_TESTS=1`): Postgres migrations/concurrent budgets, real Hermes adapter, builder egress isolation, Postgres sidecar lifecycle, unlabeled-object guard. Skipped here: no Docker daemon.
+- scripts/e2e/e2e.py implements E2E-1..11 (E2E-6 and E2E-9 have manual steps); docs/E2E.md documents them.
+- Final checks in the build environment: `uv run ruff check .` passed; `uv run pytest`: 224 passed, 5 skipped (Docker-gated); invariants: 60 passed.
+
+## 2026-09-24: Phase 17 Documentation
+
+- Added OPERATOR_GUIDE.md and E2E.md; rewrote DEPLOYMENT.md, README.md, ARCHITECTURE.md, PROJECT_DETAILS_AND_DATA_FLOW.md and HERMES_WORKFLOW_STEP_BY_STEP.md for v2; marked plan/ as historical v1 notes. backup.sh now dumps both databases and the concierge home.
+
+## Outstanding live acceptance (not claimed)
+
+These need infrastructure unavailable in the build environment and remain open in the Definition of done:
+Docker-gated tests; building the worker and concierge images; `hc doctor` fully green locally and on the VPS; E2E-1..11 on a real repository with the ruleset (record PR links here); a secret scan over `git log -p` and the last E2E run's logs.

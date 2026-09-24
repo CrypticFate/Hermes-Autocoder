@@ -5,8 +5,8 @@ from autocoder.redaction import redact as redact
 
 
 def protected(path: str) -> bool:
-    return (path.startswith((".git/", "migrations/", "alembic/"))
-            or Path(path).name in {".env", "key.text", "config.yaml"}
+    return (path == ".git" or path.startswith(".git/") or "/.git/" in path
+            or Path(path).name in {".env", "key.text"}
             or path.endswith((".pem", ".key")))
 
 

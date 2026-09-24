@@ -36,11 +36,17 @@ def transition(session, task, to_state, reason=""):
         raise ValueError(f"Illegal task transition: {task.state} -> {to_state}")
     session.add(Event(task_id=task.id, kind=f"{task.state}->{to_state}", detail=reason))
     task.state, task.reason, task.updated_at = to_state, reason, time.time()
-    if to_state == "closed_unmerged":
+    if to_state == "closed_unmerged" and task.kind == "plan_draft":
+        notify(session, f"Plan PR #{task.pr_number} was closed without merging. No new plan draft will be "
+               "requested until you ask for one.", level="action_required", repo_id=task.repo_id,
+               task_id=task.id, key=f"closed:{task.id}:{task.pr_number}")
+    elif to_state == "closed_unmerged":
         repo = session.get(Repository, task.repo_id)
         repo.queue_state = "paused"
-        notify(session, f"PR #{task.pr_number} for plan {task.plan_seq} was closed. Skip or retry this plan.",
-               level="action_required", repo_id=repo.id, task_id=task.id, key=f"closed:{task.id}:{task.pr_number}")
+        seq = f"{task.plan_seq:02d}" if task.plan_seq is not None else "?"
+        notify(session, f"PR #{task.pr_number} for plan {seq} was closed. Say 'skip plan {seq}', "
+               f"'retry plan {seq}', or edit the plan.", level="action_required", repo_id=repo.id,
+               task_id=task.id, key=f"closed:{task.id}:{task.pr_number}")
 
 
 def next_task(session, repo):
@@ -120,7 +126,7 @@ def claim(factory, settings, identity):
                     transition(session, task, "queued", "Next plan in sequence")
             if task is None:
                 continue
-            if task.attempt_count >= settings.scheduler.max_attempts_per_task and not task.pr_number:
+            if task.attempt_count >= settings.scheduler.max_attempts_per_task:
                 transition(session, task, "blocked", "Initial attempts exhausted")
                 continue
             transition(session, task, "preparing", "Claimed by controller")

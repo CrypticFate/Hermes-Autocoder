@@ -80,6 +80,10 @@ def verify_repository(settings, factory, repo, *, force=True, client=None):
     with factory.begin() as session:
         row = session.scalar(select(Repository).where(Repository.name == name))
         row.ruleset_report, row.ruleset_verified_at = result.model_dump(), utcnow()
+        if result.verified and row.queue_state == "blocked_ruleset":
+            row.queue_state = "active"
+            notify(session, f"{name}: repository protection verified again; queue resumed.", repo_id=row.id,
+                   key=f"ruleset-ok:{row.id}:{int(utcnow().timestamp())}")
         if not result.verified:
             row.queue_state = "blocked_ruleset"
             notify(session, "; ".join(result.problems), level="action_required", repo_id=row.id,

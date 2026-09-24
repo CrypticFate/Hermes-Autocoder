@@ -1,125 +1,161 @@
-# Deployment Runbook
+# Deployment Runbook (v2)
 
-## v2 Implementation Status
+Local first, then a VPS. Day-to-day use is in [OPERATOR_GUIDE.md](OPERATOR_GUIDE.md).
 
-Phase 0 is complete. Phase 1 implements configuration, identity and redaction; later v2 phases are not yet accepted. The existing runtime still has the gaps recorded in AUDIT.md. Do not treat a passing Phase 1 doctor as full v2 deployment acceptance. Existing live config, secret contents, databases and running containers were not modified by this migration.
+## 1. GitHub setup (once)
 
-## Configuration Migration (Phase 1)
+1. **Bot account.** Create a second GitHub account (for example `yourname-autocoder`) and enable 2FA.
+2. **Collaborator.** For each managed repository: *Settings → Collaborators* → add the bot with the
+   **Write** role (not Maintain or Admin; the gatekeeper refuses anything but exactly `write`).
+3. **Fine-grained token.** Bot account: *Settings → Developer settings → Fine-grained tokens*. Resource
+   owner: the account owning the repositories (approve fine-grained tokens for collaborators if prompted).
+   Select only the managed repositories. Permissions:
+   - Contents: read and write; Pull requests: read and write; Metadata: read;
+   - Checks, Commit statuses, Actions: read only; Administration: **none**.
 
-The example now matches Appendix A of HERMES_AUTOCODER_V2_IMPLEMENTATION_PLAN.md. v1 owner/token mappings and flat model/budget settings are rejected, with no automatic rewriting of your live config.
+   Save it as `secrets/github_bot`. It replaces the v1 `github_personal` operator token: do not rename an
+   operator token and pretend it is the bot's.
+4. **Ruleset** (per repository): *Settings → Rules → Rulesets → New branch ruleset*.
+   - Enforcement: Active. Target: default branch. Bypass list: only you, or empty. **Never add the bot.**
+   - Rules: Restrict deletions; Block force pushes; Require a pull request before merging (required
+     approvals ≥ 1, dismiss stale approvals on push, require approval of the most recent reviewable push).
+   Classic branch protection is **not** accepted: the bot cannot read it without admin rights.
+5. **Initial commit.** The default branch must exist and should contain `plans/` (plan files or a
+   `.gitkeep`) and `report/.gitkeep`.
 
-- Set owners to a list of account names and set operator_login to your account.
-- Create a separate bot account. Set github.bot_login to that account and github.commit_name / github.commit_email to its name and GitHub noreply address.
-- Replace the old github_personal credential with a new bot-owned fine-grained PAT in secrets/github_bot. Do not rename an operator token and assume it has become a bot token.
-- Scope the bot PAT to the intended repositories: Contents and Pull requests read/write; Metadata, Checks, Commit statuses and Actions read; no Administration permission. Invite the bot with Write access. GitHub owner/organization policy may constrain fine-grained PAT access; verify the actual access before onboarding.
-- Move model settings under model and budgets under budgets. Runtime limits are under builder and scheduler; profile setup/checks are shell command strings. Old operational fields such as database_url remain supported until the later phases migrate deployment.
-- Replace builder.image and all services_allowlist image placeholders with actual sha256 image IDs or registry digests. Placeholders deliberately fail validation; they are not usable image pins.
-- scheduler.sequential must remain true. Configuration validation alone does not implement the Phase 5 state machine.
-- Set data_dir to the same absolute host path as AUTOCODER_DATA_DIR in Compose while the current host bind mounts are in use.
+Optional App mode (`github.mode: app`) uses installation tokens instead of a PAT; add `app_id`,
+`installation_id` and `private_key_secret`, and mount the key into the controller only (local override).
 
-autocoder and hc invoke the same CLI. init still migrates only the existing database schema and initializes it paused; Phase 2 has not yet changed that schema.
-
-## Secrets
-
-Only placeholders are supplied in deploy/secrets.example. Provision actual files under the ignored secrets/ directory when ready, with directory mode 0700 and file mode 0600. Never put credential values in YAML or commands that will be recorded.
-
-Current Compose mounts:
-
-| File | Container |
-| --- | --- |
-| secrets/github_bot | controller only |
-| secrets/model_provider | model-proxy only |
-| secrets/pgpass | controller and model-proxy |
-| secrets/postgres_password | database only |
-
-The provider key is now file-backed, not read from OPENROUTER_API_KEY in .env. The controller no longer mounts the entire secrets directory. Keep provider_key_file at /run/secrets/model_provider; only the proxy reads it. doctor verifies GitHub identity but does not read the provider key from the controller.
-
-pgpass contains database:5432:autocoder:autocoder:<DATABASE_PASSWORD>; postgres_password contains the same password. Escape colons and backslashes according to pgpass syntax. Separate autocoder/mem0 roles and their v2 secret names arrive in Phase 14; placeholders for those names are listed for preparation only.
-
-MCP and concierge tokens are also placeholders until their capability lifecycle and secret rotation are implemented. Do not start the later services based solely on this file.
-
-## GitHub App Alternative
-
-Bot PAT is the default. App mode additionally needs:
-
-```yaml
-github:
-  mode: app
-  bot_login: your-app-slug[bot]
-  commit_name: Hermes Autocoder
-  commit_email: "<bot-id>+your-app-slug[bot]@users.noreply.github.com"
-  app_id: 12345
-  installation_id: 67890
-  private_key_secret: /run/secrets/github_app_private_key
-```
-
-These IDs are examples, not credentials. Mount the private-key secret only into the controller when using this mode. The default Compose file is PAT-only; add the private-key secret mount in a local Compose override for App mode.
-
-The client signs RS256 JWTs and refreshes installation credentials before expiry. App identity is checked with GET /app using a JWT; installation tokens do not represent a user for GET /user. Bot-PAT identity uses GET /user and must equal github.bot_login. This documented API distinction is recorded as a plan deviation in IMPLEMENTATION_LOG.md. Future onboarding must still enforce I2; App mode does not bypass permission/ruleset checks.
-
-## Verification
-
-Run uv run ruff check . and uv run pytest for local checks. Integration tests are opt-in; mock HTTP tests do not establish live GitHub acceptance.
-
-After provisioning the bot credential, migrated configuration, initialized database, worker image and network, run:
+## 2. Configuration
 
 ```sh
-uv run hc --config config.yaml doctor
+cp config.example.yaml config.yaml
+cp .env.example .env
 ```
 
-The Phase 1 doctor validates configuration, verifies the bot identity, and checks existing database/Docker prerequisites. It explicitly identifies itself as Phase 1 verification. Full v2 doctor checks are specified in Phase 15.
+Edit `config.yaml`: `owners`, `operator_login`, `github.bot_login`, `github.commit_email` (the bot's
+`<id>+<login>@users.noreply.github.com`), `repository_profiles`, and `builder.image` (see section 4).
+`scheduler.sequential` must stay `true`. Sidecar images in `services_allowlist` are pinned by digest;
+keep them pinned when updating. `data_dir` must equal `AUTOCODER_DATA_DIR` in `.env`, because builder
+bind mounts use host paths. Set `AUTOCODER_MODEL` in `.env` to the same value as `model.model`.
 
-Do not reuse the retired provision_local_test.py or seed_local_test.py helpers. The operator creates and initializes repositories. Onboarding, numbered plan intake and ruleset-gated publication will be added in subsequent phases.
+## 3. Secrets
 
-For paid models, also set a spending cap at the provider. Application accounting does not replace a provider-enforced spending cap.
+Every secret is its own file under the git-ignored `secrets/` directory (mode 0700, files 0600):
 
-## Existing Operational Procedures
+| File | Mounted into | Source |
+| --- | --- | --- |
+| `github_bot` | controller | you (bot PAT) |
+| `model_provider` | model-proxy | you (OpenRouter key) |
+| `postgres_password` | database | generated |
+| `db_autocoder_password` | database, controller, model-proxy | generated |
+| `db_mem0_password` | database, concierge | generated |
+| `mcp_concierge_token` | controller, concierge | generated |
+| `concierge_model_token` | concierge (the database stores only its hash) | generated |
 
-The following backup and rollback procedures describe the existing v1 services. They will be updated for concierge volumes and the final v2 schema during Phase 17.
+```sh
+mkdir -p secrets && chmod 700 secrets
+# write github_bot and model_provider yourself, without shell history:
+install -m 600 /dev/null secrets/github_bot && $EDITOR secrets/github_bot
+install -m 600 /dev/null secrets/model_provider && $EDITOR secrets/model_provider
+uv run hc secrets init --dir secrets      # or: python3 -c 'import secrets;print(secrets.token_urlsafe(32))'
+```
 
-## Backups and Restore
+Rotate generated tokens with `hc secrets rotate mcp_concierge_token|concierge_model_token --dir secrets`,
+then `docker compose up -d --force-recreate controller concierge`. Rotate the GitHub, provider and database
+credentials at their source. If you use a paid model, **also set a spending cap at the provider**: the
+application's daily/monthly ceilings and per-pool request limits are not a substitute.
 
-Run `scripts/backup.sh /absolute/backup/directory` from the checkout. It briefly
-stops the controller and proxy, captures PostgreSQL and persistent artifacts,
-and restarts only services that were running. Schedule it daily with a systemd
-timer, then copy the backup to encrypted operator-managed offsite storage.
-Back up secret files separately using your secret-management system.
+## 4. Build and pin images
 
-The supplied `deploy/systemd/hermes-autocoder-backup.service` and `.timer` run at
-02:00 UTC and prune finished logs afterward. They assume the checkout is installed
-at `/opt/hermes-autocoder`; adjust that path and backup destination when deploying.
-Install both units in `/etc/systemd/system`, run `systemctl daemon-reload`, and
-enable `hermes-autocoder-backup.timer` with `systemctl enable --now`.
+```sh
+docker compose build                              # controller/model-proxy and concierge
+docker build -f docker/worker.Dockerfile -t hermes-autocoder-worker:local .
+docker image inspect hermes-autocoder-worker:local --format '{{.Id}}'   # -> builder.image in config.yaml
+```
 
-Restore into an empty deployment with the same images and schema version:
+The builder and the concierge are built from the same pinned Hermes commit (`HERMES_COMMIT`). The
+concierge bakes its embedding model (`BAAI/bge-small-en-v1.5`, 384 dimensions) into the image because it has
+no network egress at runtime. Postgres (pgvector) and the Docker socket proxy are pinned by digest in
+`compose.yaml`.
 
-1. Stop controller and proxy, leaving PostgreSQL running.
-2. Restore the database with `docker compose exec -T database pg_restore -U
-   autocoder -d autocoder < DATABASE.dump` into the empty initialized database.
-3. Extract the data archive into the configured absolute data directory and
-   restore the original ownership. Restore secrets separately.
-4. Start the controller and proxy, inspect `status`, and keep repositories paused
-   until branch/PR reconciliation has completed. Interrupted work is preserved.
+## 5. Start
 
-Exercise restore on a separate deployment before relying on backups. The backup
-script does not erase old backups; set retention in the offsite backup system.
-Run `prune` daily to rotate old finished-run text logs; it preserves reports,
-workspaces and pending publication records.
+```sh
+docker compose up -d database docker-proxy
+docker compose run --rm -v "$PWD/secrets:/secrets:ro" controller init --secrets-dir /secrets
+docker compose up -d
+scripts/hc budget set 5 20
+scripts/hc doctor
+```
 
-## Upgrades and Rollback
+`init` migrates the database, starts the system **paused**, and registers the concierge token's hash.
+The Postgres init script (`deploy/postgres-init/01-databases.sh`) runs once on an empty volume: it creates
+the `autocoder` and `mem0` databases with separate roles (`mem0` cannot reach `autocoder`) and enables
+`vector` in `mem0`.
 
-Pause work and back up state. Build a new controller/worker image, run automated
-tests and the fixture acceptance flow, stop services, and run `init` to migrate.
-Start the pinned new images. If compatibility checks fail, stop services and
-restore the previous image and matching database backup. Do not downgrade a
-database by assuming the older image understands newer schemas.
+`scripts/hc doctor` checks: configuration, secrets, bot identity (`GET /user` equals `github.bot_login`),
+every enabled repository's ruleset, the socket proxy, pinned images (builder and sidecar digests), the
+configured runtime (gVisor if `runsc`), model-proxy and MCP health, the builder egress probe, the
+concierge tool self-check, the mem0 database with `vector`, and that only `docker-proxy` mounts the socket.
 
-## Pilot Acceptance
+## 6. First repository
 
-Use a repository you control with a seeded defect and an independent regression
-check. Verify plan creation, implementation, baseline/final evidence, report, PR,
-and cancellation. Restart during execution and publication. Merge a PR yourself
-and verify a dependent task starts only afterward. Test revoked GitHub access,
-provider failure and spending exhaustion. Then observe a 48-hour pilot before
-enabling all owned repositories. Record real PR links, costs, restarts and failures
-in the pilot report; do not replace missing evidence with fixture results.
+```sh
+scripts/hc repos add https://github.com/you/demo     # or paste the link in chat
+scripts/hc resume
+scripts/hc chat                                      # talk to the concierge
+```
+
+A refusal names the fix (permission, ruleset, archived, missing default branch). If `plans/` is empty the
+first thing you get is a plan PR.
+
+## 7. Network topology
+
+| Network | Internal | Members |
+| --- | --- | --- |
+| `control` | yes | database, docker-proxy, controller, model-proxy, concierge |
+| `hermes-workers` | yes | model-proxy, the active builder |
+| `att-<attempt>` | yes (created per attempt) | one builder and its sidecars |
+| `hermes-setup-egress` | no | a builder, only while setup commands run |
+| `github-egress` | no | controller |
+| `provider-egress` | no | model-proxy |
+
+No port is published. The MCP server listens on `controller:8765` inside `control` only. The concierge has
+no egress network.
+
+**Optional Telegram.** In a `compose.override.yaml`: add a `concierge-egress` network (not internal) to the
+concierge, add a `telegram_bot_token` secret mounted into the concierge only, and set
+`TELEGRAM_ALLOWED_USERS` in `.env` to **your** numeric Telegram user ID so the gateway serves nobody else.
+Do not publish or enable the Hermes API server or dashboard; if you must, bind them to loopback with auth.
+
+## 8. VPS notes
+
+- Firewall: allow SSH only; no application port needs to be public. Chat via SSH + `scripts/hc chat`, or
+  Telegram as above.
+- Optional gVisor: install `runsc`, register it in `/etc/docker/daemon.json` (`"runtimes": {"runsc":
+  {"path": "/usr/local/bin/runsc"}}`), restart Docker, set `builder.runtime: runsc`, and confirm with
+  `scripts/hc doctor`. Builders, check containers and sidecars then run under gVisor.
+- Log rotation: every service uses json-file logs capped at 3 × 10 MB; `hc prune` removes finished run logs
+  older than `log_retention_days` (the backup timer runs it daily).
+- Backups: `scripts/backup.sh /abs/backup/dir` (daily via `deploy/systemd/*`). Back up the `database`
+  volume (both databases), the data directory, the `concierge_home` volume, and `secrets/` separately.
+
+## 9. Backups, restore and upgrades
+
+`scripts/backup.sh` briefly stops the controller, proxy and concierge, dumps both databases, archives the
+data directory and the concierge home, and restarts what was running. Restore into an empty deployment
+with the same images: `pg_restore` each dump, extract the archives, restore secrets, start with the system
+paused, check `scripts/hc status`, then resume.
+
+Upgrade: pause, back up, rebuild, run `init` (migrations are reversible and preserve rows), start, run
+`doctor`, resume. Roll back by restoring the previous images **and** the matching backup.
+
+## 10. Migrating from v1
+
+- `github_personal` → `github_bot` (a bot-owned token; see section 1).
+- The controller no longer mounts the Docker socket or the whole secrets directory; `docker-proxy` does.
+- v1 `goal add` becomes `plans draft <repo> <goal>` (a plan PR you approve). v1 `plan/<plan-id>/…` and
+  `report/<task>/<attempt>.md` outputs no longer exist; reports live at `report/NN-slug.md` in each PR.
+- The single `pgpass`/`postgres` role is replaced by separate `autocoder` and `mem0` roles. Dump the v1
+  database, start a fresh v2 volume, and restore the dump into the `autocoder` database, then run `init`.

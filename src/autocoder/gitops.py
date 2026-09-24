@@ -1,19 +1,35 @@
 import os
+import re
 import subprocess
 from pathlib import Path
 
 from autocoder.security import PATTERNS, protected, redact
+
+AGENT_BRANCH = re.compile(r"^agent/[a-z0-9]+(?:[a-z0-9._-]*[a-z0-9])?$")
 
 
 class GitError(RuntimeError):
     pass
 
 
+def assert_agent_branch(branch: str):
+    """Pre-push assertion (I1): only refs/heads/agent/* are ever written."""
+    if not isinstance(branch, str) or not AGENT_BRANCH.fullmatch(branch) or ".." in branch:
+        raise GitError("Only agent branches may be pushed")
+    return f"refs/heads/{branch}"
+
+
 class Git:
+    # Local file transports are refused so a crafted repository cannot read host paths.
+    allow_file_protocol = False
+
     def __init__(self, token: str = "", *, commit_name="Hermes Autocoder",
                  commit_email="hermes-autocoder@users.noreply.github.com"):
         self.token = token
         self.commit_name, self.commit_email = commit_name, commit_email
+
+    def remote_url(self, repo: str) -> str:
+        return f"https://github.com/{repo}.git"
 
     def run(self, directory: Path, *args, check=True):
         env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1",
@@ -23,7 +39,8 @@ class Git:
                "GIT_COMMITTER_EMAIL": self.commit_email}
         result = subprocess.run(
             ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
-             "-c", f"safe.directory={directory}", "-c", "protocol.file.allow=never", *args],
+             "-c", f"safe.directory={directory}",
+             "-c", "protocol.file.allow=" + ("always" if self.allow_file_protocol else "never"), *args],
             cwd=directory, env=env, capture_output=True, timeout=180)
         output = result.stdout.decode("utf-8", errors="replace")
         if check and result.returncode:
@@ -35,7 +52,7 @@ class Git:
         if not directory.exists():
             directory.mkdir()
             self.run(directory, "init")
-            self.run(directory, "remote", "add", "origin", f"https://github.com/{repo}.git")
+            self.run(directory, "remote", "add", "origin", self.remote_url(repo))
         self.run(directory, "fetch", "--no-tags", "origin", base)
         sha = self.run(directory, "rev-parse", "FETCH_HEAD").strip()
         if not self.run(directory, "rev-parse", "--verify", "HEAD", check=False).strip():
@@ -53,7 +70,6 @@ class Git:
         return sorted(set(p for p in tracked + untracked if p))
 
     def gate(self, directory: Path, base: str, secrets=(), *, kind=None):
-        import re
         files = self.changed(directory, base)
         if len(files) > 100:
             return files, ["Change exceeds the 100-file maintenance limit"]
@@ -87,11 +103,11 @@ class Git:
         return files, problems
 
     def sensitive(self, files):
-        import re
         return [p for p in files if re.search(
             r"(^|/)(tests|__tests__|\.github)/|(^|/)(test_[^/]+\.py|conftest\.py|pytest\.ini|"
             r"Makefile|Dockerfile[^/]*|setup\.py|pyproject\.toml|package\.json|.*lock.*|requirements[^/]*|"
             r"jest\.config\..*|vitest\.config\..*|compose.*\.ya?ml|docker-compose.*)$|"
+            r"(^|/)(migrations|alembic)/|"
             r"(_test\.go|\.(test|spec)\.[^/]+)$", p)]
 
     def tree_digest(self, directory: Path):
@@ -120,6 +136,23 @@ class Git:
         return self.run(directory, "rev-parse", "HEAD").strip()
 
     def push(self, directory: Path, branch: str):
-        if not branch.startswith("agent/"):
-            raise GitError("Only agent branches may be pushed")
-        self.run(directory, "push", "origin", f"HEAD:refs/heads/{branch}")
+        ref = assert_agent_branch(branch)
+        # Never force: the ruleset blocks it, and repairs only append commits.
+        self.run(directory, "push", "--no-verify", "origin", f"HEAD:{ref}")
+
+    def rebase(self, directory: Path, repo: str, base: str, branch: str):
+        """Rebase an agent branch onto the moved default branch in a gatekeeper clone.
+
+        Returns (True, new_head) or (False, conflict summary). Hooks stay disabled via run().
+        """
+        assert_agent_branch(branch)
+        self.prepare(directory, repo, base, branch)
+        self.run(directory, "fetch", "--no-tags", "origin", base)
+        upstream = self.run(directory, "rev-parse", "FETCH_HEAD").strip()
+        result = self.run(directory, "rebase", upstream, check=False)
+        if self.run(directory, "status", "--porcelain").strip() or self.run(
+                directory, "rev-parse", "-q", "--verify", "REBASE_HEAD", check=False).strip():
+            conflicts = self.run(directory, "diff", "--name-only", "--diff-filter=U", check=False).split()
+            self.run(directory, "rebase", "--abort", check=False)
+            return False, "Conflicting files: " + (", ".join(conflicts) or redact(result[-1000:]))
+        return True, self.run(directory, "rev-parse", "HEAD").strip()

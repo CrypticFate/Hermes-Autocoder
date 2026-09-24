@@ -174,6 +174,7 @@ class Settings(ConfigModel):
 
     # Deployment controls retained while subsequent phases migrate the v1 runtime.
     database_url: str = "postgresql+psycopg://autocoder@database/autocoder"
+    database_password_file: Path | None = None
     provider_key_file: Path = Path("/run/secrets/model_provider")
     excluded_repositories: list[str] = Field(default_factory=list)
     self_repository: str | None = None

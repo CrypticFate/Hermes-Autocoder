@@ -1,70 +1,140 @@
 name: hermes-autocoder
+# Topology (plan section 4): only docker-proxy mounts the Docker socket; only controller reaches GitHub;
+# only model-proxy reaches the provider; the concierge and database have no egress at all.
+x-hardening: &hardening
+  restart: unless-stopped
+  init: true
+  security_opt: ["no-new-privileges:true"]
+  logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
+
 services:
   database:
-    image: postgres:16-alpine@sha256:4327b9fd295502f326f44153a1045a7170ddbfffed1c3829798328556cfd09e2
-    restart: unless-stopped
+    <<: *hardening
+    image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
     mem_limit: 1g
     environment:
-      POSTGRES_USER: autocoder
-      POSTGRES_DB: autocoder
+      POSTGRES_USER: postgres
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
-    secrets: [postgres_password]
-    volumes: [database:/var/lib/postgresql/data]
+    secrets: [postgres_password, db_autocoder_password, db_mem0_password]
+    volumes:
+      - database:/var/lib/postgresql/data
+      - ./deploy/postgres-init:/docker-entrypoint-initdb.d:ro
     networks: [control]
     healthcheck:
-      test: [CMD-SHELL, pg_isready -U autocoder -d autocoder]
+      test: [CMD-SHELL, pg_isready -U postgres -d autocoder && pg_isready -U postgres -d mem0]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+
+  docker-proxy:
+    <<: *hardening
+    image: tecnativa/docker-socket-proxy:v0.4.2@sha256:1f3a6f303320723d199d2316a3e82b2e2685d86c275d5e3deeaf182573b47476
+    mem_limit: 128m
+    environment:
+      CONTAINERS: 1
+      NETWORKS: 1
+      IMAGES: 1
+      DISTRIBUTION: 1
+      EXEC: 1
+      POST: 1
+      ALLOW_START: 1
+      ALLOW_STOP: 1
+      ALLOW_RESTARTS: 0
+      VOLUMES: 0
+      SWARM: 0
+      SERVICES: 0
+      SECRETS: 0
+      BUILD: 0
+      SYSTEM: 0
+      INFO: 1
+      VERSION: 1
+      PING: 1
+    volumes: [/var/run/docker.sock:/var/run/docker.sock:ro]
+    networks: [control]
+
   controller:
+    <<: *hardening
     build: .
     image: hermes-autocoder-controller:local
-    restart: unless-stopped
-    init: true
     mem_limit: 1g
+    command: [run]
     environment:
-      PGPASSFILE: /run/secrets/pgpass
-    secrets: [github_bot, pgpass]
+      DOCKER_HOST: tcp://docker-proxy:2375
+      AUTOCODER_LOG_FORMAT: json
+    secrets: [github_bot, db_autocoder_password, mcp_concierge_token]
     volumes:
       - ./config.yaml:/app/config.yaml:ro
-      - /var/run/docker.sock:/var/run/docker.sock
+      # Builder bind mounts use host paths, so the data directory keeps the same absolute path.
       - ${AUTOCODER_DATA_DIR:-/var/lib/hermes-autocoder}:${AUTOCODER_DATA_DIR:-/var/lib/hermes-autocoder}
-    networks: [control]
+    networks: [control, github-egress]
     depends_on:
       database: {condition: service_healthy}
+      docker-proxy: {condition: service_started}
     healthcheck:
-      test: [CMD, autocoder, --config, /app/config.yaml, health]
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 5
-    logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
+
   model-proxy:
+    <<: *hardening
     image: hermes-autocoder-controller:local
-    restart: unless-stopped
-    init: true
     mem_limit: 512m
     command: [proxy]
     environment:
-      PGPASSFILE: /run/secrets/pgpass
-    secrets: [model_provider, pgpass]
+      AUTOCODER_LOG_FORMAT: json
+    secrets: [model_provider, db_autocoder_password]
     volumes:
       - ./config.yaml:/app/config.yaml:ro
-    networks: [control, workers]
+    networks: [control, workers, provider-egress]
     depends_on:
       database: {condition: service_healthy}
-    logging: {driver: json-file, options: {max-size: 10m, max-file: '3'}}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  concierge:
+    <<: *hardening
+    build:
+      context: .
+      dockerfile: docker/concierge.Dockerfile
+    image: hermes-autocoder-concierge:local
+    mem_limit: 2g
+    cap_drop: [ALL]
+    environment:
+      CONCIERGE_MODEL: ${AUTOCODER_MODEL:-nvidia/nemotron-3-super-120b-a12b:free}
+      MEMORY_USER_ID: operator
+      CONCIERGE_BUILTIN_MEMORY: "true"
+      # Optional Telegram: set TELEGRAM_ALLOWED_USERS to your numeric user id, add the telegram_bot_token
+      # secret and a concierge-egress network in a local override (docs/DEPLOYMENT.md).
+      TELEGRAM_ALLOWED_USERS: ${TELEGRAM_ALLOWED_USERS:-}
+    secrets: [concierge_model_token, mcp_concierge_token, db_mem0_password]
+    volumes: [concierge_home:/home/concierge/.hermes]
+    networks: [control]
+    depends_on:
+      database: {condition: service_healthy}
+      controller: {condition: service_healthy}
+      model-proxy: {condition: service_healthy}
+
 networks:
-  control: {}
-  workers:
-    name: hermes-workers
+  control: {internal: true}
+  workers: {name: hermes-workers, internal: true}
+  github-egress: {}
+  provider-egress: {}
+  # Attached to a builder only while dependency setup commands run.
+  setup-egress: {name: hermes-setup-egress}
+
 volumes:
   database: {}
+  concierge_home: {}
+
 secrets:
-  model_provider:
-    file: ./secrets/model_provider
-  github_bot:
-    file: ./secrets/github_bot
-  pgpass:
-    file: ./secrets/pgpass
-  postgres_password:
-    file: ./secrets/postgres_password
+  model_provider: {file: ./secrets/model_provider}
+  github_bot: {file: ./secrets/github_bot}
+  postgres_password: {file: ./secrets/postgres_password}
+  db_autocoder_password: {file: ./secrets/db_autocoder_password}
+  db_mem0_password: {file: ./secrets/db_mem0_password}
+  mcp_concierge_token: {file: ./secrets/mcp_concierge_token}
+  concierge_model_token: {file: ./secrets/concierge_model_token}

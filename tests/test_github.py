@@ -58,16 +58,6 @@ def test_write_transport_failure_is_not_blindly_retried():
     assert len(calls) == 1
 
 
-def test_create_private_repository(settings):
-    def handle(request):
-        if request.method == "GET":
-            return httpx.Response(200, json={"login": "owner"})
-        assert request.url.path == "/user/repos"
-        assert json.loads(request.content) == {"name": "pilot", "private": True, "auto_init": True}
-        return httpx.Response(201, json={"html_url": "https://github.com/owner/pilot"})
-    assert client(handle).create_repository(settings.owners[0], "pilot")["html_url"].endswith("/pilot")
-
-
 def test_discovery_accepts_recent_commit_with_stale_size(settings):
     def handle(request):
         if request.url.path == "/user":
@@ -77,11 +67,3 @@ def test_discovery_accepts_recent_commit_with_stale_size(settings):
         return httpx.Response(200, json=[{
             "owner": {"login": "owner"}, "full_name": "owner/pilot", "size": 0}])
     assert client(handle).repositories(settings.owners[0])[0]["size"] == 1
-
-
-def test_create_repository_rejects_wrong_owner_and_invalid_name(settings):
-    api = client(lambda _: httpx.Response(200, json={"login": "other"}))
-    with pytest.raises(ValueError, match="Invalid"):
-        api.create_repository(settings.owners[0], "../bad")
-    with pytest.raises(GitHubError, match="created by the operator"):
-        api.create_repository(settings.owners[0], "pilot")
