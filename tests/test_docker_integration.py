@@ -12,7 +12,12 @@ POSTGRES = "postgres:16@sha256:a3b7f434b2dc57ce85a67e171163eb8ab1a1ebcb39d274846
 @pytest.fixture
 def client():
     import docker
-    return docker.from_env()
+    client = docker.from_env()
+    try:
+        client.images.get(POSTGRES)
+    except docker.errors.ImageNotFound:
+        client.images.pull(POSTGRES)
+    return client
 
 
 def test_postgres_sidecar_reachable_then_fully_removed(settings, factory, active, client):
@@ -21,7 +26,7 @@ def test_postgres_sidecar_reachable_then_fully_removed(settings, factory, active
     from autocoder.networks import create_attempt_network
     from autocoder.sidecars import SidecarManager
     settings.services_allowlist["postgres"] = ServiceConfig(
-        image=POSTGRES, tmpfs="/var/lib/postgresql/data",
+        image=POSTGRES, tmpfs="/var/lib/postgresql/data", user="999:999",
         env={"POSTGRES_USER": "app", "POSTGRES_DB": "app", "POSTGRES_PASSWORD": "{{password}}"},
         healthcheck=["pg_isready", "-U", "app", "-d", "app"],
         expose_env={"DATABASE_URL": "postgresql://app:{{password}}@{{host}}:5432/app"})

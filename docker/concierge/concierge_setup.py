@@ -19,7 +19,9 @@ FORBIDDEN_TOOLSETS = {"terminal", "file", "code_execution", "browser", "web", "s
                       "feishu_doc", "feishu_drive", "yuanbao"}
 FORBIDDEN_TOOLS = {"terminal", "process", "read_file", "write_file", "patch", "search_files", "execute_code",
                    "delegate_task", "web_search", "web_extract", "image_generate", "computer_use",
-                   "skill_manage", "cronjob", "vision_analyze", "send_message"}
+                   "skill_manage", "cronjob", "vision_analyze", "send_message",
+                   # Hermes tool-search bridge: tool_call reaches deferred tools the resolver never lists.
+                   "tool_search", "tool_describe", "tool_call"}
 AUX_TASKS = ["vision", "web_extract", "compression", "skills_hub", "approval", "mcp", "title_generation",
              "memory_query_rewrite", "tts_audio_tags", "triage_specifier", "kanban_decomposer",
              "profile_describer", "goal_judge", "curator", "monitor", "background_review", "moa_reference",
@@ -111,6 +113,13 @@ def telegram_problems(config, env=os.environ):
     return problems
 
 
+def tool_search_off(config):
+    """Hermes adds tool_search/tool_describe/tool_call unless tools.tool_search is disabled
+    (dict form `enabled: off`, or the legacy bool `tool_search: false`)."""
+    raw = (config.get("tools") or {}).get("tool_search")
+    return raw is False or (isinstance(raw, dict) and str(raw.get("enabled")).lower() == "off")
+
+
 def selfcheck(config, resolver=hermes_resolver, env=os.environ):
     problems = telegram_problems(config, env)
     toolsets, tools = resolver(config)
@@ -132,6 +141,8 @@ def selfcheck(config, resolver=hermes_resolver, env=os.environ):
         problems.append("Only the autocoder MCP server may be configured")
     if (config.get("memory") or {}).get("provider") != "mem0":
         problems.append("memory.provider must be mem0")
+    if not tool_search_off(config):
+        problems.append("tools.tool_search.enabled must be off (the bridge bypasses the tool allowlist)")
     return problems
 
 

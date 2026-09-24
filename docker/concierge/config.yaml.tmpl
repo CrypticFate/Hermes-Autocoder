@@ -23,6 +23,10 @@ memory:
   provider: mem0
 compression:
   enabled: false
+# No tool_search/tool_call bridge: every tool the self-check approves stays directly in the schema.
+tools:
+  tool_search:
+    enabled: "off"
 approvals:
   mode: manual
 auxiliary: ${AUXILIARY}

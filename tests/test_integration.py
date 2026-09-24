@@ -111,11 +111,15 @@ class Handler(BaseHTTPRequestHandler):
                 'choices':[{'index':0, 'message':{'role':'assistant','content':'fixture completed'},
                             'finish_reason':'stop'}],
                 'usage':{'prompt_tokens':50, 'completion_tokens':3, 'total_tokens':53}}
-        if not any(message.get('role') == 'tool' for message in payload['messages']):
+        # Like a real builder: change the workspace, write the structured result, then answer.
+        result = json.dumps({'completed': True, 'summary': 'fixture completed'})
+        steps = ['printf "fixture completed" > /workspace/engine-proof.txt',
+                 f"printf '%s' '{result}' > /output/result.json"]
+        done = sum(message.get('role') == 'tool' for message in payload['messages'])
+        if done < len(steps):
             body['choices'][0] = {'index':0, 'finish_reason':'tool_calls', 'message': {
-                'role':'assistant', 'content':None, 'tool_calls':[{'id':'fixture-call','type':'function',
-                'function':{'name':'terminal','arguments':json.dumps({
-                    'command': 'printf "fixture completed" > /workspace/engine-proof.txt'})}}]}}
+                'role':'assistant', 'content':None, 'tool_calls':[{'id':f'fixture-call-{done}','type':'function',
+                'function':{'name':'terminal','arguments':json.dumps({'command': steps[done]})}}]}}
         from autocoder.streaming import completion_sse
         data = (completion_sse(body) if payload.get('stream') else json.dumps(body)).encode()
         self.send_response(200)
@@ -132,7 +136,9 @@ assert 'fixture completed' in result['summary'], result
 print('adapter-ok')
 server.shutdown()
 '''
-        result = runner.command(["/opt/hermes/.venv/bin/python", "-c", stub], timeout=90)
+        # The model token is exec-only (never container env), exactly as DockerRunner.run passes it.
+        result = runner.command(["/opt/hermes/.venv/bin/python", "-c", stub], timeout=90,
+                                environment={"AUTOCODER_MODEL_TOKEN": "temporary-test-token"})
         assert result["exit_code"] == 0, result["output"]
         assert "adapter-ok" in result["output"]
         assert (workspace / "engine-proof.txt").read_text() == "fixture completed"

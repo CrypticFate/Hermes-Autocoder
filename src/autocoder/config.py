@@ -131,6 +131,8 @@ class ServiceConfig(ConfigModel):
     cpus: float = Field(default=1, gt=0, allow_inf_nan=False)
     memory: str = "1g"
     tmpfs: str | None = None
+    # uid:gid to run as, so images whose entrypoint would chown/setuid work with every capability dropped.
+    user: str | None = Field(default=None, pattern=r"^\d+:\d+$")
     env: dict[str, str] = Field(default_factory=dict)
     command: list[str] = Field(default_factory=list)
     healthcheck: list[str] = Field(min_length=1)

@@ -231,10 +231,22 @@ def test_i6_rendered_concierge_config_is_safe(tmp_path):
     lambda t: t.replace("  telegram: ${TOOLSETS}\n", ""),
     lambda t: t.replace("  provider: mem0", "  provider: \"\""),
     lambda t: t + "\n" if False else t.replace("mcp_servers:\n", "mcp_servers:\n  shell:\n    command: sh\n"),
+    lambda t: t.replace('    enabled: "off"\n', ""),
+    lambda t: t.replace('    enabled: "off"', '    enabled: auto'),
 ])
 def test_i6_selfcheck_fails_when_template_enables_forbidden_tools(tmp_path, edit):
     module, config, _ = rendered(tmp_path, edit)
     assert module.selfcheck(config, fake_resolver, env={})
+
+
+def test_i6_selfcheck_fails_on_tool_search_bridge_tools(tmp_path):
+    module, config, _ = rendered(tmp_path)
+    def bridge_resolver(config):
+        toolsets, tools = fake_resolver(config)
+        return toolsets, tools | {"tool_search", "tool_describe", "tool_call"}
+    assert any("tool_call" in p for p in module.selfcheck(config, bridge_resolver, env={}))
+    assert module.tool_search_off({"tools": {"tool_search": False}})
+    assert not module.tool_search_off({"tools": {"tool_search": {"enabled": False}}})
 
 
 def test_i6_kanban_only_allowed_when_gated_off(tmp_path):

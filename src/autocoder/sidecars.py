@@ -1,7 +1,7 @@
 import secrets
 import time
 
-from docker.errors import NotFound
+from docker.errors import ImageNotFound, NotFound
 from sqlalchemy import select
 
 from autocoder.models import Sidecar
@@ -34,6 +34,15 @@ class SidecarManager:
                 session.add(row)
                 session.flush()
                 row_id = row.id
+            tmpfs_options = "rw,nosuid,size=1g"
+            if spec.user:
+                uid, gid = spec.user.split(":")
+                tmpfs_options += f",uid={uid},gid={gid},mode=0700"
+            try:
+                self.client.images.get(spec.image)
+            except ImageNotFound:
+                # Digest-pinned, so a pull cannot substitute a different image.
+                self.client.images.pull(spec.image)
             container = self.client.containers.create(spec.image,
                 command=[render(v) for v in spec.command] or None,
                 name=f"hermes-sidecar-{attempt}-{name}", environment=env,
@@ -41,7 +50,7 @@ class SidecarManager:
                 network=self.network.name, runtime=self.settings.builder.runtime,
                 mem_limit=spec.memory, nano_cpus=int(spec.cpus * 1_000_000_000), pids_limit=256,
                 cap_drop=["ALL"], security_opt=["no-new-privileges:true"],
-                tmpfs={spec.tmpfs: "rw,nosuid,size=1g"} if spec.tmpfs else {},
+                user=spec.user, tmpfs={spec.tmpfs: tmpfs_options} if spec.tmpfs else {},
                 log_config={"type": "none"})
             with self.factory.begin() as session:
                 session.get(Sidecar, row_id).container_id = container.id

@@ -1,6 +1,7 @@
 from unittest.mock import Mock
 
 import pytest
+from docker.errors import ImageNotFound
 from sqlalchemy import select
 
 from autocoder.config import ServiceConfig
@@ -29,6 +30,32 @@ def test_service_lifecycle_and_password_stays_out_of_state(settings, factory, ac
     network.remove.assert_called_once()
     with factory() as session:
         assert session.scalar(select(Sidecar)).status == "removed"
+
+
+def test_missing_sidecar_image_is_pulled_by_digest(settings, factory, active):
+    image = "postgres@sha256:" + "a" * 64
+    settings.services_allowlist["postgres"] = ServiceConfig(image=image, healthcheck=["pg_isready"])
+    client, network, container = Mock(), Mock(id="net", labels={"autocoder.managed": "true"}), Mock()
+    container.id, container.labels = "container", {"autocoder.managed": "true"}
+    container.exec_run.return_value.exit_code = 0
+    client.images.get.side_effect = ImageNotFound("absent")
+    client.containers.create.return_value = container
+    SidecarManager(settings, factory, client, network).start_services(active, ["postgres"])
+    client.images.pull.assert_called_once_with(image)
+    assert client.containers.create.call_args.args[0] == image
+
+
+def test_sidecar_user_owns_its_tmpfs_and_keeps_no_capabilities(settings, factory, active):
+    settings.services_allowlist["postgres"] = ServiceConfig(image="postgres@sha256:" + "a" * 64,
+        tmpfs="/data", user="999:999", healthcheck=["pg_isready"])
+    client, network, container = Mock(), Mock(id="net", labels={"autocoder.managed": "true"}), Mock()
+    container.id, container.labels = "container", {"autocoder.managed": "true"}
+    container.exec_run.return_value.exit_code = 0
+    client.containers.create.return_value = container
+    SidecarManager(settings, factory, client, network).start_services(active, ["postgres"])
+    kwargs = client.containers.create.call_args.kwargs
+    assert kwargs["user"] == "999:999" and kwargs["cap_drop"] == ["ALL"]
+    assert kwargs["tmpfs"] == {"/data": "rw,nosuid,size=1g,uid=999,gid=999,mode=0700"}
 
 
 def test_unknown_service(settings, factory):

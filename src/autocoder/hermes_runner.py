@@ -70,11 +70,13 @@ def main():
     home.mkdir(parents=True, exist_ok=True)
     proxy, token = os.environ["AUTOCODER_PROXY_URL"], os.environ["AUTOCODER_MODEL_TOKEN"]
     # Keys verified against the pinned Hermes config schema (memory, compression, mcp_servers,
-    # approvals, terminal, auxiliary). Every auxiliary task is pinned to the one configured model.
+    # approvals, terminal, tools, auxiliary). Every auxiliary task is pinned to the one configured model.
     config = {"memory": {"memory_enabled": False, "user_profile_enabled": False, "provider": ""},
               "compression": {"enabled": False}, "mcp_servers": {},
               "approvals": {"mode": "off"}, "terminal": {"backend": "local"},
               "kanban": {"dispatch_in_gateway": False},
+              # Off: the tool_search/tool_describe/tool_call bridge would expose deferred tools indirectly.
+              "tools": {"tool_search": {"enabled": "off"}},
               "auxiliary": {key: {"provider": "custom", "model": context.model, "base_url": proxy,
                                   "api_key": token} for key in AUX_TASKS}}
     (home / "config.yaml").write_text(yaml.safe_dump(config))

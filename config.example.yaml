@@ -59,6 +59,7 @@ services_allowlist:
     cpus: 1
     memory: 1g
     tmpfs: /var/lib/postgresql/data
+    user: "999:999"   # the image's postgres user; sidecars run with every capability dropped
     env:
       POSTGRES_USER: app
       POSTGRES_DB: app
