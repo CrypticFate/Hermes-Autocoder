@@ -11,8 +11,6 @@ from autocoder.github import for_owner
 from autocoder.gitops import Git
 from autocoder.models import Repository, Task
 from autocoder.notifications import notify
-from autocoder.onboarding import verify_repository
-from autocoder.security import safe_write
 
 FILENAME = re.compile(r"^plans/(?P<seq>\d{2,3})-(?P<slug>[a-z0-9]+(?:-[a-z0-9]+)*)\.md$")
 
@@ -185,34 +183,7 @@ def render_plan(seq, title, objective, criteria, services=(), context=""):
     return path, text
 
 
-def publish_plan_files(settings, factory, repo, workspace, branch, files, client):
-    if not files or len(files) > 8:
-        raise ValueError("A plan PR must contain 1 to 8 plans")
-    parsed = [parse(p, t, allowlist=settings.services_allowlist) for p, t in files.items()]
-    if len({p.seq for p in parsed}) != len(parsed):
-        raise ValueError("Duplicate sequence numbers")
-    if not branch.startswith("agent/plans-"):
-        raise ValueError("Invalid plan branch")
-    git = Git(client.access_token(), commit_name=settings.github.commit_name,
-              commit_email=settings.github.commit_email)
-    with factory() as session:
-        row = session.scalar(select(Repository).where(Repository.name == repo))
-        base = row.default_branch
-    git.prepare(workspace, repo, base, branch)
-    for path, text in files.items():
-        safe_write(workspace, path, text)
-    changed = git.changed(workspace, git.run(workspace, "rev-parse", "HEAD").strip())
-    if set(changed) != set(files):
-        raise ValueError("Plan publication contains unexpected files")
-    git.commit(workspace, "Propose numbered implementation plans")
-    if not verify_repository(settings, factory, repo, client=client).verified:
-        raise ValueError("Plan publication blocked by repository protection")
-    git.push(workspace, branch)
-    return client.ensure_pr(repo, branch, base, "[Plans] Proposed implementation plans",
-                            "\n".join(f"- {p.path}: {p.title}" for p in parsed), False)
-
-
-def scan_repository(settings, factory, repo, *, force=False, client=None):
+def scan_repository(settings, factory, repo, *, force=False, client=None, git=None):
     client = client or for_owner(settings, repo.split("/")[0])
     with factory() as session:
         row = session.scalar(select(Repository).where(Repository.name == repo))
@@ -220,7 +191,7 @@ def scan_repository(settings, factory, repo, *, force=False, client=None):
             raise ValueError("Repository is not enabled")
         repository_id, base = row.id, row.default_branch
     checkout = settings.data_dir / "intake" / str(repository_id)
-    git = Git(client.access_token())
+    git = git or Git(client.access_token())
     head = git.prepare(checkout, repo, base, "agent/plans-intake")
     with factory.begin() as session:
         row = session.get(Repository, repository_id)

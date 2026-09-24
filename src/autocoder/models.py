@@ -117,6 +117,8 @@ class Task(Base):
     invalid_reason: Mapped[str | None] = mapped_column(Text)
     feedback_cursors: Mapped[dict] = mapped_column(JSON, default=dict, server_default="{}")
     retry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    superseded_pr_number: Mapped[int | None] = mapped_column(Integer)
+    rebase_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class Attempt(Base):
@@ -137,6 +139,7 @@ class Attempt(Base):
     publication_sha: Mapped[str | None] = mapped_column(String)
     ready_for_review: Mapped[bool] = mapped_column(Boolean, default=False)
     detail: Mapped[str] = mapped_column(Text, default="")
+    feedback_ids: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
 
 
 class Event(Base):

@@ -1,10 +1,14 @@
+import sys
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
 from autocoder.config import Profile, Settings
 from autocoder.db import initialize, session_factory
 from autocoder.models import Attempt, Control, Repository, Task
+
+sys.path.insert(0, str(Path(__file__).parent))
 
 
 @pytest.fixture

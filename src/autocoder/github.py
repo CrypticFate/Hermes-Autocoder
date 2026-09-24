@@ -1,4 +1,3 @@
-import re
 import time
 from datetime import datetime
 from threading import RLock
@@ -64,9 +63,6 @@ class GitHubClient:
     def repository(self, repo):
         return self._request("GET", f"/repos/{repo}")
 
-    def open_issues(self, repo):
-        return self._request("GET", f"/repos/{repo}/issues", params={"state": "open", "per_page": 50})
-
     def permission(self, repo, login):
         return self._request("GET", f"/repos/{repo}/collaborators/{quote(login, safe='')}/permission")
 
@@ -86,7 +82,7 @@ class GitHubClient:
     def delete_branch(self, repo, branch):
         if not branch.startswith("agent/"):
             raise ValueError("Only agent branches can be removed")
-        return self._request("DELETE", f"/repos/{repo}/git/refs/heads/{quote(branch, safe='')}")
+        return self._request("DELETE", f"/repos/{repo}/git/refs/heads/{quote(branch, safe='/')}")
 
     def _request(self, method, path, _authorization=None, **kwargs):
         for attempt in range(4):
@@ -144,18 +140,9 @@ class GitHubClient:
     def pull(self, repo, number):
         return self._request("GET", f"/repos/{repo}/pulls/{number}")
 
-    def create_repository(self, owner, name):
-        """Create a private, initialized repository only for a configured owner."""
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", name):
-            raise ValueError("Invalid repository name")
-        if self._config and self._config.mode == "app":
-            raise GitHubError("Repositories must be created by the operator")
-        user = self.authenticated_user()
-        if user["login"].lower() != owner.lower():
-            raise GitHubError("Repositories must be created by the operator")
-        return self._request("POST", "/user/repos", json={"name": name, "private": True, "auto_init": True})
-
     def ensure_pr(self, repo, branch, base, title, body, draft):
+        if not branch.startswith("agent/"):
+            raise GitHubError("Pull requests may only be opened from agent branches")
         title, body = redact(title), redact(body)
         owner = repo.split("/")[0]
         existing = self._request("GET", f"/repos/{repo}/pulls",
@@ -163,42 +150,52 @@ class GitHubClient:
         if existing:
             pr = existing[0]
             if pr["state"] == "open":
-                return self._request("PATCH", f"/repos/{repo}/pulls/{pr['number']}",
-                                    json={"title": title, "body": body})
+                updated = self._request("PATCH", f"/repos/{repo}/pulls/{pr['number']}",
+                                        json={"title": title, "body": body})
+                if bool(updated.get("draft")) != bool(draft) and updated.get("node_id"):
+                    self.set_draft(updated["node_id"], draft)
+                    updated["draft"] = draft
+                return updated
             return pr
         return self._request("POST", f"/repos/{repo}/pulls",
                             json={"title": title, "head": branch, "base": base, "body": body, "draft": draft})
 
-    def ready_pr(self, node_id):
+    def issue_comments(self, repo, number):
+        return list(self._pages(f"/repos/{repo}/issues/{number}/comments"))
+
+    def review_comments(self, repo, number):
+        return list(self._pages(f"/repos/{repo}/pulls/{number}/comments"))
+
+    def reviews(self, repo, number):
+        return list(self._pages(f"/repos/{repo}/pulls/{number}/reviews"))
+
+    def check_runs(self, repo, sha):
+        return list(self._pages(f"/repos/{repo}/commits/{quote(sha, safe='')}/check-runs", _key="check_runs"))
+
+    def check_run_annotations(self, repo, check_run_id):
+        return self._request("GET", f"/repos/{repo}/check-runs/{int(check_run_id)}/annotations",
+                             params={"per_page": 50})
+
+    def comment_pr(self, repo, number, body):
+        return self._request("POST", f"/repos/{repo}/issues/{number}/comments", json={"body": redact(body)})
+
+    def close_pr(self, repo, number):
+        """Close a superseded agent pull request without integrating it."""
+        pr = self.pull(repo, number)
+        if not pr["head"]["ref"].startswith("agent/"):
+            raise GitHubError("Only agent pull requests can be closed by the gatekeeper")
+        return self._request("PATCH", f"/repos/{repo}/pulls/{number}", json={"state": "closed"})
+
+    def set_draft(self, node_id, draft):
+        mutation = "convertPullRequestToDraft" if draft else "markPullRequestReadyForReview"
         result = self._request("POST", "/graphql", json={
-            "query": "mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { pullRequest { id } } }",
+            "query": f"mutation($id: ID!) {{ {mutation}(input: {{pullRequestId: $id}}) {{ pullRequest {{ id }} }} }}",
             "variables": {"id": node_id}})
         if result.get("errors"):
-            raise GitHubError("Could not mark pull request ready for review")
+            raise GitHubError("Could not change pull request draft state")
 
-    def feedback(self, repo, number, since):
-        result = []
-        for endpoint in (f"issues/{number}/comments", f"pulls/{number}/comments", f"pulls/{number}/reviews"):
-            for row in self._pages(f"/repos/{repo}/{endpoint}"):
-                timestamp = row.get("submitted_at") or row.get("updated_at") or row.get("created_at")
-                if not timestamp:
-                    continue
-                at = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
-                if at <= since or row.get("user", {}).get("type") == "Bot":
-                    continue
-                if row.get("author_association") not in {"OWNER", "MEMBER", "COLLABORATOR"}:
-                    continue
-                if row.get("body"):
-                    result.append((at, row["body"]))
-        return sorted(result)
-
-    def checks(self, repo, sha):
-        runs = self._request("GET", f"/repos/{repo}/commits/{sha}/check-runs", params={"per_page": 100})
-        status = self._request("GET", f"/repos/{repo}/commits/{sha}/status")
-        failures = [r["name"] for r in runs.get("check_runs", [])
-                    if r.get("conclusion") in {"failure", "timed_out", "cancelled", "action_required"}]
-        failures += [s["context"] for s in status.get("statuses", []) if s["state"] in {"failure", "error"}]
-        return failures
+    def ready_pr(self, node_id):
+        self.set_draft(node_id, False)
 
 
 # Compatibility import name for existing callers; the public API has explicit methods only.

@@ -98,6 +98,9 @@ class DockerRunner:
                          "NPM_CONFIG_ENGINE_STRICT": "true"},
             log_config=docker.types.LogConfig(type="json-file", config={"max-size": "10m", "max-file": "2"}))
         attach(self.network, self.container)
+        if self.check_only:
+            # Check and review containers never get setup egress; prove it before anything runs.
+            isolation_probe(self)
         return self.container.id
 
     def setup(self):
@@ -122,6 +125,7 @@ class DockerRunner:
     def command(self, argv, timeout=None, environment=None):
         import threading
         require_managed(self.container)
+        original = argv
         if isinstance(argv, str):
             argv = ["sh", "-lc", argv]
         result, error = [], []
@@ -157,7 +161,7 @@ class DockerRunner:
         if error:
             raise error[0]
         code, output = result[0]
-        return {"command": argv, "exit_code": code,
+        return {"command": original, "exit_code": code,
                 "output": redact(output.decode(errors="replace")[-30000:], [self.token])}
 
     def run(self, context: TaskContext) -> RunResult:
@@ -200,8 +204,7 @@ class DockerRunner:
             self.container = None
 
 
-def cleanup_attempt(attempt_id):
-    client = docker.from_env()
+def cleanup_attempt(client, attempt_id):
     for container in client.containers.list(all=True, filters={"label": f"autocoder.attempt={attempt_id}"}):
         require_managed(container)
         container.remove(force=True)

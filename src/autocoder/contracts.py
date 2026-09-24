@@ -28,6 +28,7 @@ class TaskContext(BaseModel):
     checks: list[str] = Field(default_factory=list)
     branch: str = ""
     repair: dict | None = None
+    operator_login: str = ""
 
 
 class Proposal(BaseModel):
