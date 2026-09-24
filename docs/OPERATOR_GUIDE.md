@@ -51,7 +51,7 @@ Rules the gatekeeper enforces (an invalid plan is never guessed at; you get a no
 
 ## Daily flow
 
-1. **Chat** (`scripts/hc chat`) or use the CLI to check status and notifications.
+1. **Chat** from Telegram ([TELEGRAM.md](TELEGRAM.md)), with `scripts/hc chat`, or use the CLI to check status and notifications.
 2. **Review** the open PR on GitHub. The PR body lists criteria and check results; the full report is in
    the PR under `report/NN-slug.md`.
 3. **Approve and merge** when satisfied. The bot authored the PR, so your approval satisfies the ruleset.

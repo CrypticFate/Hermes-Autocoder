@@ -136,3 +136,11 @@ The operator explicitly instructed: "Continue all phases; defer live checks" on 
 
 These need infrastructure unavailable in the build environment and remain open in the Definition of done:
 Docker-gated tests; building the worker and concierge images; `hc doctor` fully green locally and on the VPS; E2E-1..11 on a real repository with the ruleset (record PR links here); a secret scan over `git log -p` and the last E2E run's logs.
+
+## 2026-09-24: Telegram chat for the concierge (Phase 13.4, 13.7)
+
+- Verified against hermes-agent 0.19.0: the Telegram adapter needs the `messaging` extra (python-telegram-bot), now installed in the concierge image. The gateway enables Telegram from `TELEGRAM_BOT_TOKEN`, authorizes default-deny via `TELEGRAM_ALLOWED_USERS`, and by default answers unknown users with a pairing code, so the template sets `unauthorized_dm_behavior: ignore`.
+- The self-check now also fails on open access: missing or non-numeric `TELEGRAM_ALLOWED_USERS`, or any of `TELEGRAM_ALLOW_ALL_USERS`, `GATEWAY_ALLOW_ALL_USERS`, `TELEGRAM_GROUP_ALLOWED_CHATS`, `TELEGRAM_GROUP_ALLOWED_USERS`, `TELEGRAM_ALLOW_BOTS`.
+- compose.telegram.yaml adds only a `concierge-egress` network and the `telegram_bot_token` secret (enable with `COMPOSE_FILE` in .env).
+- Proactive notifications: an operator-defined Hermes cron job (`no_agent`, script-only, re-seeded at each start) runs `autocoder_notify.py` every 2 minutes, reads unacknowledged notifications through the MCP server, and prints only new ones for delivery to `TELEGRAM_HOME_CHANNEL` (the operator's id). It makes no model calls, and the model still has no cronjob tool. Seeding was verified against the real `cron.jobs` module.
+- Tests: tests/test_telegram.py (access rules, override contents, image extra, model-free idempotent job, notifier against the real MCP app). `uv run pytest`: 239 passed, 5 skipped. Live Telegram acceptance is pending a bot token.

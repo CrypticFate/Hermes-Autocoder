@@ -29,3 +29,5 @@ auxiliary: ${AUXILIARY}
 # The Kanban dispatcher spawns tool-enabled workers; the concierge must never run it.
 kanban:
   dispatch_in_gateway: false
+# Unknown Telegram users get no reply and no pairing code; only TELEGRAM_ALLOWED_USERS may chat.
+unauthorized_dm_behavior: ignore

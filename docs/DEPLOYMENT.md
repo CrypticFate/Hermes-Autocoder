@@ -124,15 +124,15 @@ first thing you get is a plan PR.
 No port is published. The MCP server listens on `controller:8765` inside `control` only. The concierge has
 no egress network.
 
-**Optional Telegram.** In a `compose.override.yaml`: add a `concierge-egress` network (not internal) to the
-concierge, add a `telegram_bot_token` secret mounted into the concierge only, and set
-`TELEGRAM_ALLOWED_USERS` in `.env` to **your** numeric Telegram user ID so the gateway serves nobody else.
-Do not publish or enable the Hermes API server or dashboard; if you must, bind them to loopback with auth.
+**Telegram.** To chat from Telegram, follow [TELEGRAM.md](TELEGRAM.md): a BotFather token in
+`secrets/telegram_bot_token`, your numeric id in `TELEGRAM_ALLOWED_USERS`, and `COMPOSE_FILE=compose.yaml:compose.telegram.yaml`
+in `.env`. The override adds only a `concierge-egress` network and the token secret. Do not publish or enable
+the Hermes API server or dashboard.
 
 ## 8. VPS notes
 
-- Firewall: allow SSH only; no application port needs to be public. Chat via SSH + `scripts/hc chat`, or
-  Telegram as above.
+- Firewall: allow SSH only; no application port needs to be public (Telegram uses outbound polling).
+  Chat via SSH + `scripts/hc chat`, or Telegram as above.
 - Optional gVisor: install `runsc`, register it in `/etc/docker/daemon.json` (`"runtimes": {"runsc":
   {"path": "/usr/local/bin/runsc"}}`), restart Docker, set `builder.runtime: runsc`, and confirm with
   `scripts/hc doctor`. Builders, check containers and sidecars then run under gVisor.

@@ -92,8 +92,27 @@ def kanban_gated_off(config, env=os.environ):
             and (config.get("kanban") or {}).get("dispatch_in_gateway") is False)
 
 
+# Any of these would let someone other than the operator steer the concierge.
+OPEN_ACCESS_VARIABLES = ("TELEGRAM_ALLOW_ALL_USERS", "GATEWAY_ALLOW_ALL_USERS", "TELEGRAM_GROUP_ALLOWED_CHATS",
+                         "TELEGRAM_GROUP_ALLOWED_USERS", "TELEGRAM_ALLOW_BOTS")
+
+
+def telegram_problems(config, env=os.environ):
+    """Telegram is operator-only: explicit numeric user ids, no allow-all, no groups, no pairing."""
+    problems = [f"{name} must not be set" for name in OPEN_ACCESS_VARIABLES if env.get(name, "").strip()
+                and env.get(name, "").strip().lower() not in {"false", "0", "none", "no"}]
+    if not env.get("TELEGRAM_BOT_TOKEN"):
+        return problems
+    users = [u.strip() for u in env.get("TELEGRAM_ALLOWED_USERS", "").split(",") if u.strip()]
+    if not users or not all(u.isdigit() for u in users):
+        problems.append("TELEGRAM_ALLOWED_USERS must list your numeric Telegram user id")
+    if config.get("unauthorized_dm_behavior") != "ignore":
+        problems.append("unauthorized_dm_behavior must be ignore (no pairing for unknown users)")
+    return problems
+
+
 def selfcheck(config, resolver=hermes_resolver, env=os.environ):
-    problems = []
+    problems = telegram_problems(config, env)
     toolsets, tools = resolver(config)
     if "kanban" in toolsets and kanban_gated_off(config, env):
         toolsets = toolsets - {"kanban"}
@@ -116,6 +135,24 @@ def selfcheck(config, resolver=hermes_resolver, env=os.environ):
     return problems
 
 
+NOTIFY_JOB = "autocoder-notifications"
+
+
+def seed_notifications(home, interval=None, jobs=None):
+    """Install the operator-defined, model-free notification job (the model has no cronjob tool)."""
+    scripts = Path(home) / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(HERE / "autocoder_notify.py", scripts / "autocoder_notify.py")
+    if jobs is None:
+        from cron import jobs
+    schedule = f"every {interval or os.environ.get('NOTIFY_INTERVAL', '2m')}"
+    for job in jobs.list_jobs(include_disabled=True):
+        if job.get("name") == NOTIFY_JOB:
+            jobs.remove_job(job["id"])  # Re-seeded at every start so the definition cannot drift.
+    return jobs.create_job(prompt=None, schedule=schedule, name=NOTIFY_JOB, deliver="telegram",
+                           script="autocoder_notify.py", no_agent=True)
+
+
 def main(argv=sys.argv[1:]):
     import yaml
     command = argv[0] if argv else "selfcheck"
@@ -123,6 +160,10 @@ def main(argv=sys.argv[1:]):
     if command == "render":
         render()
         print("concierge config rendered")
+        return 0
+    if command == "seed-notifications":
+        seed_notifications(home)
+        print("telegram notification job installed")
         return 0
     config = yaml.safe_load((home / "config.yaml").read_text())
     try:
