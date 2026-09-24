@@ -136,3 +136,19 @@ The operator explicitly instructed: "Continue all phases; defer live checks" on 
 
 These need infrastructure unavailable in the build environment and remain open in the Definition of done:
 Docker-gated tests; building the worker and concierge images; `hc doctor` fully green locally and on the VPS; E2E-1..11 on a real repository with the ruleset (record PR links here); a secret scan over `git log -p` and the last E2E run's logs.
+
+## 2026-09-24: Telegram chat for the concierge (Phase 13.4, 13.7)
+
+- Verified against hermes-agent 0.19.0: the Telegram adapter needs the `messaging` extra (python-telegram-bot), now installed in the concierge image. The gateway enables Telegram from `TELEGRAM_BOT_TOKEN`, authorizes default-deny via `TELEGRAM_ALLOWED_USERS`, and by default answers unknown users with a pairing code, so the template sets `unauthorized_dm_behavior: ignore`.
+- The self-check now also fails on open access: missing or non-numeric `TELEGRAM_ALLOWED_USERS`, or any of `TELEGRAM_ALLOW_ALL_USERS`, `GATEWAY_ALLOW_ALL_USERS`, `TELEGRAM_GROUP_ALLOWED_CHATS`, `TELEGRAM_GROUP_ALLOWED_USERS`, `TELEGRAM_ALLOW_BOTS`.
+- compose.telegram.yaml adds only a `concierge-egress` network and the `telegram_bot_token` secret (enable with `COMPOSE_FILE` in .env).
+- Proactive notifications: an operator-defined Hermes cron job (`no_agent`, script-only, re-seeded at each start) runs `autocoder_notify.py` every 2 minutes, reads unacknowledged notifications through the MCP server, and prints only new ones for delivery to `TELEGRAM_HOME_CHANNEL` (the operator's id). It makes no model calls, and the model still has no cronjob tool. Seeding was verified against the real `cron.jobs` module.
+- Tests: tests/test_telegram.py (access rules, override contents, image extra, model-free idempotent job, notifier against the real MCP app). `uv run pytest`: 239 passed, 5 skipped. Live Telegram acceptance is pending a bot token.
+
+## 2026-09-24: Opt-in operator token mode (`github.mode: operator_pat`)
+
+- Operator decision, made explicitly after the trade-offs were explained: allow running with the operator's own GitHub token instead of a bot account. This is a recorded deviation from I2/I3 as written; the default remains `bot_pat` and nothing changes for it.
+- In `operator_pat`: `github.bot_login` must equal `operator_login`; `require_ruleset.min_approvals` may be 0 (GitHub never lets an author approve their own PR); onboarding accepts write/maintain/admin but still requires an active pull-request ruleset, non-fast-forward and deletion rules. I1 remains enforced in code (no merge call; pushes asserted to `refs/heads/agent/*`), but GitHub no longer independently prevents a merge by the token.
+- Feedback: the gatekeeper's own PR comments now carry a hidden `SYSTEM_MARKER`, and in this mode authorship alone no longer marks a comment as the system's, so the operator's comments are used for repairs while the gatekeeper's are skipped.
+- The token stays in `secrets/github_bot`, mounted only into the controller. Builders and the concierge never receive it.
+- Tests: tests/test_operator_pat.py (config rules, permissions/ruleset, full plan → PR → operator-comment repair → merge with the same account, marker). `uv run pytest`: 246 passed, 5 skipped.

@@ -33,6 +33,7 @@ feedback, gatekeeper-rendered reports, …) are listed in the plan's section 2 a
 ## Documentation
 
 - [Operator guide](docs/OPERATOR_GUIDE.md): plan format, daily flow, chat commands, draft PRs, reports.
+- [Telegram](docs/TELEGRAM.md): chat with the concierge and get notifications from your phone.
 - [Deployment](docs/DEPLOYMENT.md): bot account, ruleset, secrets, images, `docker compose up`, VPS.
 - [Architecture](docs/ARCHITECTURE.md) and [project details and data flow](docs/PROJECT_DETAILS_AND_DATA_FLOW.md).
 - [End-to-end scenarios](docs/E2E.md), [implementation log](docs/IMPLEMENTATION_LOG.md), [audit](docs/AUDIT.md).

@@ -9,6 +9,8 @@ import jwt
 from autocoder.config import Settings, secret
 from autocoder.redaction import redact, register_secret
 
+SYSTEM_MARKER = "<!-- hermes-autocoder:gatekeeper -->"
+
 
 class GitHubError(RuntimeError):
     pass
@@ -177,7 +179,10 @@ class GitHubClient:
                              params={"per_page": 50})
 
     def comment_pr(self, repo, number, body):
-        return self._request("POST", f"/repos/{repo}/issues/{number}/comments", json={"body": redact(body)})
+        # The marker lets feedback collection skip the gatekeeper's own comments even when the token
+        # belongs to the operator (operator_pat mode).
+        return self._request("POST", f"/repos/{repo}/issues/{number}/comments",
+                             json={"body": redact(body) + "\n\n" + SYSTEM_MARKER})
 
     def close_pr(self, repo, number):
         """Close a superseded agent pull request without integrating it."""
@@ -206,5 +211,5 @@ def for_owner(settings: Settings, owner: str) -> GitHubClient:
     if owner.lower() not in {entry.lower() for entry in settings.owners}:
         raise GitHubError("Owner is not configured")
     config = settings.github
-    token = secret(config.token_secret) if config.mode == "bot_pat" else ""
+    token = secret(config.token_secret) if config.mode in {"bot_pat", "operator_pat"} else ""
     return GitHubClient(token, config=config)

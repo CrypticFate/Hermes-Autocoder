@@ -22,14 +22,17 @@ def pinned_image(value: str) -> str:
 
 
 class RulesetConfig(ConfigModel):
-    min_approvals: int = Field(default=1, ge=1, le=6)
+    # 0 is accepted only in operator_pat mode: GitHub never lets you approve your own pull request.
+    min_approvals: int = Field(default=1, ge=0, le=6)
     require_last_push_approval: bool = True
     block_force_push: bool = True
     block_deletion: bool = True
 
 
 class GitHubConfig(ConfigModel):
-    mode: Literal["bot_pat", "app"] = "bot_pat"
+    # bot_pat (default, recommended): a separate write-only bot account. app: GitHub App tokens.
+    # operator_pat: the operator's own token; opt-in with weaker separation (docs/DEPLOYMENT.md).
+    mode: Literal["bot_pat", "app", "operator_pat"] = "bot_pat"
     bot_login: str = Field(min_length=1, pattern=r"^[A-Za-z0-9][A-Za-z0-9-]*(?:\[bot\])?$")
     token_secret: Path = Path("/run/secrets/github_bot")
     commit_name: str = Field(default="Hermes Autocoder", min_length=1)
@@ -49,6 +52,8 @@ class GitHubConfig(ConfigModel):
             raise ValueError("github.commit_email must be an email address")
         if self.mode == "app" and not all((self.app_id, self.installation_id, self.private_key_secret)):
             raise ValueError("App mode requires app_id, installation_id and private_key_secret")
+        if self.mode != "operator_pat" and self.require_ruleset.min_approvals < 1:
+            raise ValueError("require_ruleset.min_approvals may be 0 only in operator_pat mode")
         return self
 
 
@@ -195,7 +200,10 @@ class Settings(ConfigModel):
 
     @model_validator(mode="after")
     def validate_config(self):
-        if self.operator_login.lower() == self.github.bot_login.lower():
+        same = self.operator_login.lower() == self.github.bot_login.lower()
+        if self.github.mode == "operator_pat" and not same:
+            raise ValueError("In operator_pat mode github.bot_login must equal operator_login (the token owner)")
+        if self.github.mode != "operator_pat" and same:
             raise ValueError("operator_login and github.bot_login must differ")
         missing = set(self.repository_profiles.values()) - self.profiles.keys()
         if missing:

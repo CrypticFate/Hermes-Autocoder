@@ -6,6 +6,7 @@ from datetime import datetime
 
 from sqlalchemy import select
 
+from autocoder.github import SYSTEM_MARKER
 from autocoder.models import Attempt, Feedback, Task
 from autocoder.notifications import notify
 from autocoder.redaction import redact
@@ -25,9 +26,16 @@ def _login(row):
     return ((row.get("user") or {}).get("login") or "").strip()
 
 
-def _is_bot(row, bot_login):
+def _is_system(row, github):
+    """Comments written by the gatekeeper itself (or any bot app) are never feedback.
+
+    In operator_pat mode the token owner is the operator, so authorship alone cannot identify the
+    gatekeeper; its comments carry SYSTEM_MARKER instead.
+    """
     user = row.get("user") or {}
-    return user.get("type") == "Bot" or _login(row).lower() == bot_login.lower()
+    if user.get("type") == "Bot" or SYSTEM_MARKER in (row.get("body") or ""):
+        return True
+    return github.mode != "operator_pat" and _login(row).lower() == github.bot_login.lower()
 
 
 def _items(client, repo, number, head_sha):
@@ -74,8 +82,8 @@ def collect(settings, factory, task_id, client, repo, pr):
         if key in known:
             continue
         known.add(key)
-        if source != "check_run" and _is_bot(row, settings.github.bot_login):
-            continue  # The bot's own comments are never feedback.
+        if source != "check_run" and _is_system(row, settings.github):
+            continue  # The gatekeeper's own comments are never feedback.
         author = _login(row)
         operator = source == "check_run" or author.lower() == settings.operator_login.lower()
         if operator and not actionable:

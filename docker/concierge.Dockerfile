@@ -11,7 +11,8 @@ RUN mkdir /opt/hermes && curl -fL --retry 5 "https://codeload.github.com/NousRes
     tar -xz --strip-components=1 -C /opt/hermes
 WORKDIR /opt/hermes
 COPY --from=hermes_uv /uv /usr/local/bin/uv
-RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --python /usr/local/bin/python3 --no-python-downloads
+# The `messaging` extra provides the Telegram gateway adapter (python-telegram-bot).
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --extra messaging --python /usr/local/bin/python3 --no-python-downloads
 RUN --mount=type=cache,target=/root/.cache/uv uv pip install --python /opt/hermes/.venv/bin/python \
     "mem0ai==${MEM0_VERSION}" "fastembed==${FASTEMBED_VERSION}" "psycopg[binary,pool]>=3.2,<4" "pyyaml>=6,<7"
 # Bake the embedding model: the concierge has no egress at runtime.
