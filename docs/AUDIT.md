@@ -1,6 +1,6 @@
 # Hermes Autocoder v2 Audit
 
-Audit date: 2026-09-24. Evidence references below are the Phase 0 baseline, before production edits. Missing rows point to the current owning module or deployment surface, not an implementation of the missing feature. This is a baseline inventory, not a claim that v2 is operational.
+Audit date: 2026-09-24. Evidence references below are the Phase 0 baseline, before production edits. Missing rows point to the current owning module or deployment surface, not an implementation of the missing feature. This is a baseline inventory, not a claim that v2 is operational. The **v2 completion status** section at the end supersedes the Status column.
 
 | Requirement | Status (done / partial / missing / conflicts) | Evidence (file:line) | Action |
 | --- | --- | --- | --- |
@@ -141,3 +141,41 @@ Audit date: 2026-09-24. Evidence references below are the Phase 0 baseline, befo
 
 Baseline tests: 40 passed, 2 integration tests skipped, 1 third-party deprecation warning. Initial full ruff check failed only on a generated data/local/workspaces checkout. Phase 0 excludes data/ explicitly in Ruff configuration, because this checkout has no .git and Ruff did not apply its .gitignore. No production Python, secrets, databases, or running services changed in Phase 0. See IMPLEMENTATION_LOG.md for rerun results and subsequent phase status.
 
+
+## v2 completion status (2026-09-24)
+
+Code status after the Phase 9-17 work. "Pending" items need live infrastructure that the build environment did not have (Docker daemon, GitHub bot credentials, model provider, a VPS); they are not claimed as passed.
+
+| Requirement | Status | Evidence | Remaining live acceptance |
+| --- | --- | --- | --- |
+| I1 | done (code, tests) | gitops.py assert_agent_branch/push; github.py has no merge method | Live: E2E-1..11 assert agent/* pushes |
+| I2 | done (code, tests) | onboarding.py inspect_repository; controller.py publish (force re-verify before push) | Live: E2E-4, E2E-9 |
+| I3 | done (code, tests) | compose.yaml secret mounts; mcp_server.py registry | Live: container inspection on the deployed stack |
+| I4 | done (code, tests) | compose.yaml model_provider → model-proxy only; proxy.py sole reader | Live: container inspection |
+| I5 | done (code, unit tests); Docker test written | worker.py start/setup/isolation_probe; networks.py; compose networks | Run RUN_DOCKER_TESTS=1 test_docker_integration.py |
+| I6 | done (code, tests vs real Hermes resolver) | docker/concierge/concierge_setup.py selfcheck; entrypoint.sh | Build concierge image; confirm selfcheck.json ok |
+| I7 | done (code, tests) | hermes_runner.py config; worker.py effective-config check | Live builder run |
+| I8 | done | gitops.py gate (kind=implementation) | — |
+| I9 | done | gitops.py gate; controller.py _implement renders report after gates | — |
+| I10 | done | scheduler.py next_task/claim | Live: E2E-1 |
+| I11 | done | feedback.py collect/pending/repair_context | Live: E2E-8 |
+| I12 | done | config.py ServiceConfig; plans.parse; sidecars.py | Live: E2E-5, doctor digest check |
+| I13 | done | reports.py and mcp_server.py read DB rows | — |
+| I14 | done | redaction.py; notifications.notify; mcp_server.cap_output; reports; JSON logs | Secret scan of the last E2E run |
+| P1 (config, identity, redaction, GitHubClient) | done | config.py, github.py, redaction.py | Live doctor identity |
+| P2 (data model) | done | migrations 0001-0003; tests/test_migrations.py | Postgres upgrade/downgrade on a v1 copy (Docker test) |
+| P3 (onboarding, rulesets) | done | onboarding.py; tests/test_onboarding.py | E2E-4, E2E-9 |
+| P4 (plan intake, drafts, add_plan) | done | plans.py; controller.py _operator_plan/_draft_plans; v1 artifacts.py removed | E2E-2 |
+| P5 (scheduler) | done | scheduler.py; tests/test_scheduler.py | — |
+| P6 (builder runtime) | done in code; Docker acceptance pending | worker.py, hermes_runner.py, contracts.py | Docker tests + live model run |
+| P7 (sidecars) | done in code; Docker acceptance pending | sidecars.py | test_docker_integration.py, E2E-5 |
+| P8 (gates, checks container, review, reports) | done | gitops.py, controller.py _checks/_review, reports.py | — |
+| P9 (publication) | done | controller.py publish; reports.pr_body; github.ensure_pr/label_pr/delete_branch | E2E-1 |
+| P10 (feedback, repairs, conflicts) | done | feedback.py; controller.py poll_prs/_handle_conflict; tests/test_workflow.py | E2E-3, E2E-8, E2E-11 |
+| P11 (pools, concierge capability) | done | budget.py, proxy.py | Live concierge + mem0 through proxy |
+| P12 (MCP server) | done | mcp_server.py; tests/test_mcp_server.py | Live concierge connection |
+| P13 (concierge + mem0) | done in code; image build and E2E-6 pending | docker/concierge*, scripts/mem0_admin.py | E2E-6 |
+| P14 (hardening) | done in code; deploy acceptance pending | compose.yaml, deploy/postgres-init, labeled-object guards | docker compose config; T-I5 through the proxy |
+| P15 (recovery, logs, CLI, doctor) | done in code; chaos run pending | controller.py reconcile/_sweep_docker, cli.py, scripts/hc | E2E-7 |
+| P16 (tests) | unit/invariant done; Docker and E2E pending | tests/, tests/invariants/, scripts/e2e/ | Run Docker tests and E2E-1..11 |
+| P17 (docs) | done | OPERATOR_GUIDE, DEPLOYMENT, E2E, README, ARCHITECTURE, PROJECT_DETAILS | Clean-machine deployment |

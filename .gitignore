@@ -44,3 +44,4 @@ backups/
 *.swo
 .DS_Store
 Thumbs.db
+e2e-results.jsonl

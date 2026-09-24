@@ -1,94 +1,77 @@
-# Architecture and Contracts
+# Architecture and Contracts (v2)
 
-## Data Flow
+## Modules
 
-The controller lists accessible repositories for configured resource owners.
-Enabled repositories enter a maintenance scan at most once a day. User goals
-take priority. A planner returns a validated dependency graph with evidence and
-acceptance criteria. Each task gets a stable branch and isolated checkout.
+| Module | Responsibility |
+| --- | --- |
+| `controller.py` | Tick loop: reconcile → poll PRs → refresh repos/plans → claim → execute → publish |
+| `scheduler.py` | The only place task states change (`transition`), sequential `next_task`, claims, pause/skip/retry |
+| `onboarding.py` | URL normalization, bot identity/permission, ruleset verification (`verify_repository`) |
+| `plans.py` | Discovery from committed blobs, strict parsing, idempotent reconcile, `add_plan`, drafts |
+| `worker.py` | Builder/check container lifecycle, hardening, setup-only egress, isolation probe |
+| `hermes_runner.py` | Builder-side Hermes config (memory off, terminal+file only) and prompt (Appendix F) |
+| `sidecars.py`, `networks.py` | Allowlisted per-attempt services on internal `att-<id>` networks; labeled-object guard |
+| `gitops.py` | Git with hooks/fsmonitor disabled, gates, sensitive-change detection, agent-only push, rebase |
+| `reports.py` | Report (Appendix C) and PR body (Appendix D) rendering from DB rows and measured checks |
+| `feedback.py` | PR feedback collection, operator filter, debounce, fenced CI excerpts, repair context |
+| `github.py` | `GitHubClient`: explicit methods only, no generic request, no merge method |
+| `budget.py`, `proxy.py` | Capabilities (attempt/concierge), pools, ceilings; OpenAI-compatible proxy |
+| `mcp_server.py` | `Operations` (shared with the CLI) and the Appendix G MCP registry |
+| `notifications.py`, `redaction.py` | Deduplicated notifications; redaction for logs and all outbound text |
 
-The controller prepares dependencies in the sandbox, runs a baseline, invokes
-Hermes, independently reruns configured checks, and asks a fresh Hermes session
-to review the diff and acceptance criteria. A passing result creates a ready PR;
-incomplete local validation creates a draft and triggers bounded repair. Sensitive
-paths, possible secrets, unsupported runtimes and infrastructure errors block
-publication. All attempts retain a local report.
+## Task state machine
 
-The controller observes human merges and unlocks dependent tasks. It polls
-authorized maintainer comments and CI outcomes to repair existing PRs. There is
-no merge or deployment endpoint in the controller.
+```text
+pending → queued → preparing → running → validating → publishing → pr_open ─┬→ merged
+   │         ▲                              │                        │        ├→ closed_unmerged → (retry) queued
+   │         └──────── attempts remain ─────┘                        │        └→ changes_requested → queued (repair)
+   ├→ invalid → pending (plan fixed)        attempts exhausted → blocked → (retry) queued
+   ├→ cancelled (plan deleted)   └→ skipped (operator)
+```
 
-## Interfaces
+`scheduler.transition` validates every move against `TRANSITIONS`, writes an `events` row in the same
+transaction, and handles side effects (a closed implementation PR pauses its repository). A test forbids
+state assignments anywhere else. `next_task` returns the lowest pending plan only when no task of the
+repository is active and every lower plan is merged, skipped or cancelled; plan drafts go first.
+One builder runs at a time across all repositories under a database lease.
 
-- `TaskContext` is a versioned, validated request containing stable IDs, mode,
-  objective prompt, base commit, model, iteration and duration limits.
-- `AgentRunner.run(TaskContext) -> RunResult` is the engine adapter. `RunResult`
-  is untrusted evidence, not authorization to publish or mark a task merged.
-- `PlanResult` contains up to five `Proposal` records with unique local keys,
-  objectives, evidence, acceptance criteria, categories and dependencies.
-  Validation rejects missing dependencies and cycles before persistence.
-- `ReviewResult` records the independent verdict, one acceptance result per
-  criterion, and concrete objections.
-- The model proxy exposes only `POST /v1/chat/completions` and `GET /health`.
-  It accepts text/tool requests for the configured model. Provider completions
-  are buffered and accounted before returning JSON or Hermes-compatible SSE.
-  Images, files, alternate models and provider overrides are unsupported.
-- CLI configuration is versioned YAML. Runtime profiles supply pinned images,
-  setup commands and independently selected check commands as argument arrays.
+## Attempt pipeline
 
-## Persistence and States
+1. Re-verify the ruleset (cached 10 minutes), fetch `main`, create or reuse `agent/NN-slug`.
+2. Create `att-<attempt>` (internal), start allowlisted sidecars and wait for their health checks.
+3. Start the builder on `hermes-workers` + `att-<attempt>`; attach `hermes-setup-egress` only for setup
+   commands, detach, then prove isolation with a probe.
+4. Run baseline checks, issue an attempt capability, run Hermes with `context.json` (plan fields, service
+   env **names**, checks, fenced repair data). The token is revoked when Hermes exits.
+5. Validate `result.json` (criteria 1:1 with the plan), run the hard gates (protected paths, secrets,
+   symlinks, binaries, size, escapes, `.gitattributes` drivers, `.gitmodules`, `plans/`, `report/`).
+6. Run checks in a **fresh** read-only container (no token, no egress), then a fresh Hermes review session.
+   A tree digest proves neither changed the implementation.
+7. Commit `plan NN: <title>` (or `address review (repair k)`), render and commit `report/NN-slug.md`.
+8. Publish: force re-verify the ruleset and bot permission, check HEAD equals the validated commit, push
+   `refs/heads/agent/*` only (asserted in code), create/update the PR (ready or draft), add the label.
+9. `finally`: revoke tokens, remove containers, sidecars and the network (only labeled objects).
 
-PostgreSQL is authoritative. Markdown is a human-readable projection.
+## Contracts
 
-`queued -> planning -> planned` handles goals and maintenance scans. The validated
-plan creates executable tasks in `ready`. Execution follows
-`ready -> running -> validating -> pr_open -> awaiting_review -> merged`.
-`blocked`, `failed`, `cancelled`, and `closed_unmerged` preserve distinct outcomes.
-Operator retry requeues blocked work. Closed PRs are not silently reopened.
+- `TaskContext` (controller → builder): kind, mode, plan fields, `plan_path`/`report_path`, base SHA,
+  branch, service env names, checks, `repair` (`previous_attempt_summary`, `operator_feedback[]`,
+  `ci_failures[]`, optional `conflict`), model and limits.
+- `RunResult` (builder → controller, untrusted): `summary` ≤ 2,000 chars, `criteria[]` matching the plan
+  1:1 in order, `files_changed_rationale[]`, `tests_added[]`, `deviations[]`, `follow_ups[]`,
+  `open_questions[]`. Extra fields are rejected.
+- `ReviewResult`: `accepted`, `acceptance_met[]` in criterion order, `objections[]`.
 
-A global database lease permits one active controller. Repository leases prevent
-overlapping writes. A restart first reconciles publication records, then stops
-abandoned workers and requeues interrupted work within its attempt allowance.
-GitHub branch and PR identity are stable across retries. Push never force-updates
-a branch. A publication record is written before contacting GitHub so a timeout
-after a successful write can be reconciled without repeating the coding job.
+## Publication decision
 
-## Budget Accounting
+Ready PR only if every gatekeeper check passed, the reviewer marked every criterion met with no
+objections, and no sensitive path changed. Otherwise a draft whose report and body start with
+"Needs attention". A hard-gate failure publishes nothing and retries while attempts remain.
 
-The proxy hashes temporary run credentials in the database. Tokens expire at the
-task deadline and are revoked when the attempt finishes. Every model request
-locks the control row, checks task state and request count, and reserves a
-conservative text-token estimate against UTC daily and calendar-month ceilings.
-Provider usage settles the reservation; missing usage or unknown outcomes retain
-the full reservation. Retries, planning and independent review all count.
+## Recovery
 
-Configured prices must cover the provider's actual rates, including reasoning
-tokens charged as completion tokens. Unexpected usage above reservation pauses
-the service. This is an application spending guard, not a promise about the
-provider's eventual bill. Configure corresponding account-side limits.
-
-## Isolation and Limits
-
-Workers are non-root, use a read-only root filesystem, dropped capabilities,
-no-new-privileges, bounded CPU/memory/PIDs/temp space and a task deadline.
-Workspace usage and free disk are checked during execution. This polling guard
-is not a filesystem quota; put the data directory on a dedicated quota-limited
-filesystem on a shared VPS. Public outbound network access supports package
-installation. Host services must not expose credentials on worker-accessible
-network interfaces. This is not a sandbox for deliberately hostile public code.
-
-Worker images are built from a fixed Hermes source commit. Operator runtime
-profiles must use a tested image ID/digest. Project Python/Node versions may
-require additional image profiles; the default image contains Python 3.13 and
-Node 22. Unsupported or missing checks block a task rather than claim success.
-
-## Deliberate v1 Boundaries
-
-- One worker at a time; no web dashboard or automatic merging.
-- No fork contributions or cross-repository dependency graphs by default.
-- CI workflow edits and destructive migration paths require a separately
-  authorized human workflow; there is no approval-bypass switch.
-- Test success plus model review is useful evidence, not proof of correctness.
-  Human PR review remains part of the completion workflow.
-- Private package registries and test databases need operator-provided runtime
-  profiles and isolated infrastructure; production secrets are never forwarded.
+On startup and every tick: attempts left running are marked `interrupted`, their tokens revoked, their
+labeled containers/networks and sidecar rows removed, and the task requeued (or blocked when attempts
+are exhausted). `publication_pending` attempts are re-published without rerunning the builder. A sweep
+removes any labeled object whose attempt is finished or unknown. PR state changes that happened while the
+controller was down are applied on the next poll.

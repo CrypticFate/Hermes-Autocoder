@@ -1,3 +1,7 @@
+> **Historical (v1).** These are the v1 build notes for this service, kept for reference. The v2
+> specification is `HERMES_AUTOCODER_V2_IMPLEMENTATION_PLAN.md`; progress is in
+> `docs/IMPLEMENTATION_LOG.md`. (Managed repositories use `plans/`, plural; see the operator guide.)
+
 # Implementation Index
 
 | Phase | Specification | Local implementation | Live acceptance |
